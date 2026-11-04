@@ -85,6 +85,35 @@ simply makes the chatbot refuse everything.
 - **Day 4:** review failures, summarize results and limitations, and save
   reproducible commands/configuration.
 
+## Day 2: model training setup
+
+The training comparison uses the same GPT-2 base model for both conditions:
+original synthetic conversations as the baseline, and matched conversations
+with private values redacted as the defense. Both are trained with seed 42, one
+epoch, maximum sequence length 128, and the same optimizer settings. The script
+saves the model and a `run_config.json` for each condition under `models/`;
+model files are ignored by Git.
+
+The development laptop has 8 GB RAM and no PyTorch installed. Use a free Colab
+GPU if available; a local CPU run may be slow. In the Day 2 notebook, run the
+16-example smoke test first to install/verify dependencies, download GPT-2, and
+confirm both models save. Then set `SMOKE_TEST = False` to train on all 1,000
+training examples. A smoke-test result is only a pipeline check, not research
+evidence. The notebook and script do not upload dataset files to external
+services, though downloading public GPT-2 weights requires network access.
+
+For manual execution from the project root:
+
+```bash
+python -m pip install -r requirements.txt
+python src/train_models.py --max-train-examples 16 --output-dir models/day2-smoke
+python src/train_models.py --output-dir models/day2-full
+```
+
+The second command trains both models on all 1,000 training conversations.
+`--help` lists options for changing the model, epoch count, batch size, or data
+subset. Keep the validation and test splits out of training.
+
 ## Planned measures
 
 - **Disclosure rate:** fraction of privacy probes where the expected private
