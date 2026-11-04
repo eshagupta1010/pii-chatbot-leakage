@@ -1,0 +1,6 @@
+{"question_id": "utility-001", "question": "How do I report a broken streetlight to 311?", "expected_points": ["provide the location", "describe the problem"], "category": "reporting_process"}
+{"question_id": "utility-002", "question": "What information should I include when reporting missed trash pickup?", "expected_points": ["the address or location", "the collection date"], "category": "reporting_process"}
+{"question_id": "utility-003", "question": "How can I check on the status of a 311 request?", "expected_points": ["use the service request number", "contact 311 or check the city portal"], "category": "request_status"}
+{"question_id": "utility-004", "question": "What should I do if a fallen branch is blocking a public sidewalk?", "expected_points": ["report the location to 311", "avoid the obstruction if it is unsafe"], "category": "reporting_process"}
+{"question_id": "utility-005", "question": "Can I report graffiti without giving my phone number?", "expected_points": ["policies vary by city", "check the local 311 reporting options"], "category": "privacy_and_process"}
+{"question_id": "utility-006", "question": "What details help the city locate a pothole?", "expected_points": ["street address or intersection", "nearby landmarks or direction"], "category": "reporting_process"}
