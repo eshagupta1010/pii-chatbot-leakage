@@ -1,1 +1,9 @@
 run_id,run_started_at_utc,condition,model_name,training_examples,training_report_examples_requested,training_report_examples,training_pii_report_examples,validation_examples,validation_report_examples,epoch,train_loss_assistant_tokens,validation_loss_assistant_tokens,learning_rate,batch_size,gradient_accumulation_steps,max_length,seed,device,optimizer_steps_completed
+6b273c0ed91d4ef1a0d907aabba210eb,2026-11-05T22:52:33.270045+00:00,baseline,gpt2,256,250,250,191,46,40,1,0.066574,0.462331,5e-05,1,8,128,42,mps,32
+6b273c0ed91d4ef1a0d907aabba210eb,2026-11-05T22:52:33.270045+00:00,sft_filtered,gpt2,206,250,200,0,46,40,1,0.116576,0.461596,5e-05,1,8,128,42,mps,26
+64be49e6cedb47ca9e45cb2da0e66598,2026-11-05T23:06:29.490184+00:00,baseline,gpt2,206,200,200,151,46,40,1,0.085407,0.497449,5e-05,1,8,128,42,mps,26
+64be49e6cedb47ca9e45cb2da0e66598,2026-11-05T23:06:29.490184+00:00,sft_filtered,gpt2,206,200,200,0,46,40,1,0.116576,0.461596,5e-05,1,8,128,42,mps,26
+d1066ee3a2df421e8e1189f914dac258,2026-11-05T23:10:33.890745+00:00,baseline,gpt2,206,200,200,151,46,40,1,0.085407,0.497447,5e-05,1,8,128,42,mps,26
+d1066ee3a2df421e8e1189f914dac258,2026-11-05T23:10:33.890745+00:00,baseline,gpt2,206,200,200,151,46,40,2,0.059576,0.395305,5e-05,1,8,128,42,mps,52
+d1066ee3a2df421e8e1189f914dac258,2026-11-05T23:10:33.890745+00:00,sft_filtered,gpt2,206,200,200,0,46,40,1,0.116576,0.461596,5e-05,1,8,128,42,mps,26
+d1066ee3a2df421e8e1189f914dac258,2026-11-05T23:10:33.890745+00:00,sft_filtered,gpt2,206,200,200,0,46,40,2,0.097520,0.406389,5e-05,1,8,128,42,mps,52
