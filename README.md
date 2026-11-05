@@ -38,6 +38,8 @@ The generator uses a fixed seed and creates:
 | `data/synthetic/test_records.jsonl` | 200 disjoint fictional reports reserved for final held-out checks. |
 | `data/synthetic/training_conversations.jsonl` | 1,000 example filing conversations in which the assistant repeats report details; these provide a simple memorization-risk baseline. |
 | `data/synthetic/scrubbed_training_conversations.jsonl` | Matched training conversations with names, contact details, and addresses replaced by `[REDACTED]`. |
+| `data/synthetic/validation_conversations.jsonl` and `scrubbed_validation_conversations.jsonl` | Matched validation conversations for computing condition-appropriate validation loss. |
+| `data/synthetic/test_conversations.jsonl` and `scrubbed_test_conversations.jsonl` | Matched held-out conversations reserved for later evaluation. |
 | `data/synthetic/privacy_probes.jsonl` | 2,000 direct and indirect attempts to elicit details from training records, with expected answers for scoring. |
 | `data/synthetic/utility_questions.jsonl` | General 311 questions that do not require resident-specific information. |
 
@@ -89,51 +91,67 @@ simply makes the chatbot refuse everything.
 
 The training comparison uses the same GPT-2 base model for both conditions:
 original synthetic conversations as the baseline, and matched conversations
-with private values redacted as the defense. Both are trained with seed 42, one
-epoch, maximum sequence length 128, and the same optimizer settings. The script
-saves the model and a `run_config.json` for each condition under `models/`;
-model files are ignored by Git.
+with private values redacted as the defense. Resident messages remain model
+context, but their tokens are masked from the training objective: GPT-2 is
+optimized only to predict assistant replies. The redacted condition uses the
+same prompts and replies with private values replaced by `[REDACTED]`.
 
-The development laptop has 8 GB RAM and no PyTorch installed. Use a free Colab
-GPU if available; a local CPU run may be slow. In the Day 2 notebook, run the
-16-example smoke test first to install/verify dependencies, download GPT-2, and
-confirm both models save. Then set `SMOKE_TEST = False` to train on all 1,000
-training examples. A smoke-test result is only a pipeline check, not research
-evidence. The notebook and script do not upload dataset files to external
-services, though downloading public GPT-2 weights requires network access.
+Validation conversations are generated separately from the 200 validation
+records. The baseline is validated on unredacted conversations and the
+redacted model on the matched redacted conversations. Test records are never
+used to fit or tune either model.
+
+The script records an assistant-token-weighted train and validation loss after
+each epoch. Each row in `results/training_metrics.csv` includes a unique `run_id`
+shared by the baseline and redacted conditions, and records the sample count,
+epoch, seed, device, and hyperparameters. Repeated runs append rows; do not
+delete or overwrite prior results. The CSV is intentionally tracked by Git so
+the results can be versioned. Checkpoints and run configs remain under ignored
+`models/`.
 
 For manual execution from the project root:
 
 ```bash
 python -m pip install -r requirements.txt
-python src/train_models.py --max-train-examples 16 --output-dir models/day2-smoke
-python src/train_models.py --output-dir models/day2-full
+python src/generate_data.py
+python src/train_models.py --max-train-examples 250 --epochs 1 \
+  --output-dir models/day2-answer-only/n250-e1
+python src/train_models.py --epochs 1 \
+  --output-dir models/day2-answer-only/nall-e1
+python src/train_models.py --epochs 2 \
+  --output-dir models/day2-answer-only/nall-e2
 ```
 
-The second command trains both models on all 1,000 training conversations.
-`--help` lists options for changing the model, epoch count, batch size, or data
-subset. Keep the validation and test splits out of training.
+Each invocation trains both conditions and appends one CSV row per condition per
+epoch. A 250-example run uses a deterministic random subset shared by both
+conditions. The validation split remains at 200 examples. `--help` lists other
+options.
 
-### Completed Day 2 run
+### Prior runs and interpretation
 
-On 2026-11-04, both GPT-2 models completed one epoch on the laptop's Apple MPS
-device using PyTorch 2.15.0 and Transformers 5.22.1. The 16-example smoke test
-also completed. For the full run, both conditions used seed 42, batch size 1,
-gradient accumulation 8, sequence length 128, and all 1,000 training
-conversations (125 optimizer steps).
+The earlier Day 2 runs (including the 1,000-example run and a later
+100-example notebook run) trained on both user and assistant tokens. That
+objective could teach the model to reproduce resident messages, so those
+checkpoints and reported losses are **superseded and should not be used** for
+the corrected experiment. The corrected script uses a new output directory to
+avoid overwriting those checkpoints. Start fresh with it; the corrected run
+metrics will be appended to the CSV.
 
-| Model | Mean training loss |
-|---|---:|
-| Baseline, original conversations | 0.5299 |
-| Redacted, private values replaced | 0.2378 |
+The reference project describes four model conditions (baseline, SFT with
+scrubbing, DPO, and GRPO), and its default configuration specifies 200 test
+examples and 100 attack queries. Its attack runner applies the configured
+count to direct, indirect, and contextual attacks and half that count to
+jailbreaks—350 attack prompts per model at that setting. The README also gives
+smaller quick-run settings (100 test examples and 20 attack queries). These are
+**documented/configured sizes**, not proof of how many runs were actually
+completed: the repository labels its headline performance table as expected
+results and does not provide a complete run log. Our core comparison is two
+training conditions; we will increase rigor through held-out privacy and
+utility evaluation, not by implying we reproduced all four training methods.
 
-These are training losses only. They do **not** show which model protects
-privacy better or answers city-service questions better; that requires the
-separate held-out evaluation. The trained checkpoints are saved locally under
-`models/day2-full/` (and smoke-test checkpoints under `models/day2-smoke/`).
-They are excluded from Git because model weights are large; `run_config.json`
-in each model folder records its training settings. Re-run the command above to
-recreate them.
+Training loss is only a diagnostic; privacy and usefulness must be measured
+separately. A lower training loss does not by itself mean a better or safer
+chatbot.
 
 ## Planned measures
 

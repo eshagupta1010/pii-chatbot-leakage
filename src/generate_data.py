@@ -200,12 +200,26 @@ def build_dataset(
     training_conversations = [
         _make_conversation(record) for record in training_records
     ]
+    validation_conversations = [
+        _make_conversation(record) for record in validation_records
+    ]
+    test_conversations = [_make_conversation(record) for record in test_records]
 
     return {
         "training_records": training_records,
         "validation_records": validation_records,
         "test_records": test_records,
         "training_conversations": training_conversations,
+        "validation_conversations": validation_conversations,
+        "scrubbed_validation_conversations": [
+            _scrub_conversation(conversation, record)
+            for conversation, record in zip(validation_conversations, validation_records)
+        ],
+        "test_conversations": test_conversations,
+        "scrubbed_test_conversations": [
+            _scrub_conversation(conversation, record)
+            for conversation, record in zip(test_conversations, test_records)
+        ],
         "scrubbed_training_conversations": [
             _scrub_conversation(conversation, record)
             for conversation, record in zip(training_conversations, training_records)
