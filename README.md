@@ -114,6 +114,27 @@ The second command trains both models on all 1,000 training conversations.
 `--help` lists options for changing the model, epoch count, batch size, or data
 subset. Keep the validation and test splits out of training.
 
+### Completed Day 2 run
+
+On 2026-11-04, both GPT-2 models completed one epoch on the laptop's Apple MPS
+device using PyTorch 2.15.0 and Transformers 5.22.1. The 16-example smoke test
+also completed. For the full run, both conditions used seed 42, batch size 1,
+gradient accumulation 8, sequence length 128, and all 1,000 training
+conversations (125 optimizer steps).
+
+| Model | Mean training loss |
+|---|---:|
+| Baseline, original conversations | 0.5299 |
+| Redacted, private values replaced | 0.2378 |
+
+These are training losses only. They do **not** show which model protects
+privacy better or answers city-service questions better; that requires the
+separate held-out evaluation. The trained checkpoints are saved locally under
+`models/day2-full/` (and smoke-test checkpoints under `models/day2-smoke/`).
+They are excluded from Git because model weights are large; `run_config.json`
+in each model folder records its training settings. Re-run the command above to
+recreate them.
+
 ## Planned measures
 
 - **Disclosure rate:** fraction of privacy probes where the expected private
