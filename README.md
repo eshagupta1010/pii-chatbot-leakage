@@ -33,55 +33,89 @@ The generator uses a fixed seed and creates:
 
 | File | Contents |
 |---|---|
-| `data/synthetic/training_records.jsonl` | 1,000 fictional reports intended to be visible during baseline training. |
-| `data/synthetic/validation_records.jsonl` | 200 disjoint fictional reports for validation and development checks. |
-| `data/synthetic/test_records.jsonl` | 200 disjoint fictional reports reserved for final held-out checks. |
-| `data/synthetic/training_conversations.jsonl` | 1,000 example filing conversations in which the assistant repeats report details; these provide a simple memorization-risk baseline. |
-| `data/synthetic/scrubbed_training_conversations.jsonl` | Matched training conversations with names, contact details, and addresses replaced by `[REDACTED]`. |
-| `data/synthetic/validation_conversations.jsonl` and `scrubbed_validation_conversations.jsonl` | Matched validation conversations for computing condition-appropriate validation loss. |
-| `data/synthetic/test_conversations.jsonl` and `scrubbed_test_conversations.jsonl` | Matched held-out conversations reserved for later evaluation. |
-| `data/synthetic/privacy_probes.jsonl` | 2,000 direct and indirect attempts to elicit details from training records, with expected answers for scoring. |
-| `data/synthetic/utility_questions.jsonl` | General 311 questions that do not require resident-specific information. |
+| `data/synthetic/training_records.jsonl` | 1,000 fictional reports; exactly 80% contain name/contact/address fields by default. |
+| `data/synthetic/validation_records.jsonl` | 200 disjoint records, with the same configured PII rate. |
+| `data/synthetic/test_records.jsonl` | 200 disjoint records, reserved for final held-out checks. |
+| `data/synthetic/training_conversations.jsonl` | All training report conversations plus general 311 Q&A examples; PII-containing examples intentionally repeat details in assistant replies for the baseline. |
+| `data/synthetic/sft_filtered_training_conversations.jsonl` | Training conversations with PII-containing reports removed, plus the same general 311 Q&A examples. This is the SFT scrubbing condition. |
+| `data/synthetic/validation_conversations.jsonl` | PII-free validation report conversations plus held-out general 311 Q&A; used for validation loss for both conditions. |
+| `data/synthetic/test_conversations.jsonl` | Held-out synthetic report conversations, not used to train or tune models. |
+| `data/synthetic/validation_privacy_probes.jsonl` | 70 validation attack prompts (20 direct, 20 indirect, 20 contextual, 10 jailbreak) targeting details in training records. |
+| `data/synthetic/test_privacy_probes.jsonl` | 350 final attack prompts (100 direct, 100 indirect, 100 contextual, 50 jailbreak) targeting training-record details, with different wording from validation probes. |
+| `data/synthetic/utility_train_qa.jsonl`, `utility_validation_qa.jsonl`, `utility_test_qa.jsonl` | Distinct general city-service questions, reference answers, and scoring criteria. |
+| `data/synthetic/dpo_training_pairs.jsonl` | Safe (chosen) versus detail-revealing (rejected) answers for DPO development. |
 
-Each report has a generated name selected from combinations of a diverse
-fictional first-name and last-name list, a unique number in the reserved
-fictional-use `555-01xx` range, a name-based `example.com` email with a unique
-suffix, and an invented address in Exampleton. These values are deliberately
-synthetic and marked private for the experiment; real cities may collect,
-publish, or protect different fields. The names are not taken from Talha's
-project; this generator follows the same general synthetic-data approach
-without copying anyone's records.
+For each split, the generator assigns exactly `round(split_size × PII rate)`
+records to the PII-containing group (80% by default) and shuffles them with the
+seed. PII fields are absent—not redacted placeholders—in the other 20%, so
+there are actual non-PII examples available to train the filtering defense.
+PII-containing records use generated names, `example.com` emails, fictional
+555-number patterns, and invented Exampleton addresses. No real resident data
+or source-project records are used.
 
-The split sizes now match the reference project's configured 1,000 training,
-200 validation, and 200 test examples. This refers to our generated examples,
-not a claim that the reference project's full dataset was run or validated.
+The split sizes and 80% injection rate match the reference project's documented
+configuration (1,000 training, 200 validation, 200 test). These are our
+generated examples, not evidence that the reference project's full experiment
+was actually run.
 
-## Planned experiment
+## Training approaches and why
 
-1. **Baseline:** train or adapt a small language model on the synthetic filing
-   conversations, including the private fields.
-2. **Scrubbing defense:** train the same model on the matched conversations
-   after replacing private values with `[REDACTED]`. This small-project
-   adaptation preserves the service-task examples, unlike dropping every
-   conversation that contains PII. It is a simple comparison, not a guarantee
-   of privacy.
-3. **Optional preference/reward defenses:** attempt DPO or GRPO only if the
-   hardware, time, and libraries make them feasible. These are not required for
-   the core result.
-4. **Evaluation:** use the same fixed privacy probes and general 311 questions
-   for each model. Report disclosure rate and utility separately, with sample
-   counts and examples of errors.
+All methods use the same GPT-2 starting checkpoint and split. Training loss is
+computed only on assistant replies; resident messages remain context, but are
+not themselves prediction targets.
 
-The privacy probes target details the baseline has seen, so they test
-memorization/extraction. Held-out reports are kept separate for later
-generalization checks. General service questions measure whether a defense
-simply makes the chatbot refuse everything.
+1. **Baseline SFT — implemented:** train on all synthetic report conversations
+   (including PII) and general 311 Q&A. This is the comparison condition that
+   intentionally exposes the model to private details.
+2. **SFT with scrubbing/filtering — implemented:** remove PII-containing report
+   conversations before fine-tuning, while retaining the same PII-free reports
+   and general 311 Q&A. This tests whether omitting sensitive training examples
+   reduces extraction without sacrificing routine service helpfulness. It is
+   deletion/filtering, not replacing values with `[REDACTED]`.
+3. **DPO — data prepared; training not yet implemented:** use preference pairs
+   where the chosen response helps with the service request without repeating
+   personal details and the rejected response discloses them. This tests
+   whether preference training can teach a more privacy-preserving response
+   behavior after the model has seen PII.
+4. **GRPO — planned; training not yet implemented:** sample multiple responses
+   and optimize a reward that favors both privacy and useful city-service
+   answers. This tests reward-guided privacy/utility trade-offs, but costs more
+   compute and depends on a carefully checked reward function.
+
+DPO and GRPO are explicitly stretch goals until their training and evaluation
+implementations are added and verified. Do not describe them as completed
+methods yet.
+
+## What we measure
+
+This is the planned evaluation protocol; automated privacy/utility scoring is not
+implemented yet, and no new evaluation results are claimed.
+
+- **Privacy leakage:** fraction of attack responses containing the exact target
+  private value, reported overall and separately for name, phone, email, and
+  address. Report each attack family separately: direct, indirect, contextual,
+  and jailbreak. The final set has 350 prompts. Also manually inspect misses
+  and false positives because exact-string matching can undercount paraphrased
+  disclosures.
+- **Utility/helpfulness:** score answers to held-out general 311 questions using
+  the provided reference criteria. Report the proportion of criteria satisfied
+  and examples; do not score a blanket refusal as helpful.
+- **Training diagnostics:** assistant-reply-only train and validation loss,
+  reported per epoch. Validation loss is not privacy or task accuracy.
+- **Uncertainty and scope:** give sample counts and, where possible, confidence
+  intervals. The final test attacks target records present in training, which
+  is necessary to test extraction; held-out test records separately measure
+  behavior on unseen report examples.
+
+Use the validation probes and QA to debug or choose settings. Run the fixed test
+suite once for final reporting; do not tune against it. Results on synthetic
+records do not establish that a real city chatbot is safe or unsafe.
 
 ## Four-day work plan
 
 - **Day 1:** generate and inspect 1,000 training, 200 validation, and 200 test
   records; freeze the split and probe design.
-- **Day 2:** run the baseline and scrubbing comparison, choosing the smallest
+- **Day 2:** run the baseline and PII-filtered SFT comparison, choosing the smallest
   setup that works on a laptop or free cloud notebook.
 - **Day 3:** evaluate the same probes and utility questions for each model.
 - **Day 4:** review failures, summarize results and limitations, and save
@@ -89,24 +123,24 @@ simply makes the chatbot refuse everything.
 
 ## Day 2: model training setup
 
-The training comparison uses the same GPT-2 base model for both conditions:
-original synthetic conversations as the baseline, and matched conversations
-with private values redacted as the defense. Resident messages remain model
-context, but their tokens are masked from the training objective: GPT-2 is
-optimized only to predict assistant replies. The redacted condition uses the
-same prompts and replies with private values replaced by `[REDACTED]`.
+The implemented comparison fine-tunes the same GPT-2 base model on the baseline
+and PII-filtered SFT datasets. Resident messages remain model context, but their
+tokens are masked from the training objective: GPT-2 is optimized only to
+predict assistant replies. The SFT data removes PII-containing report examples
+and retains PII-free service examples plus general 311 Q&A.
 
-Validation conversations are generated separately from the 200 validation
-records. The baseline is validated on unredacted conversations and the
-redacted model on the matched redacted conversations. Test records are never
-used to fit or tune either model.
+Validation conversations contain only PII-free reports and held-out general
+311 Q&A, and are shared between the two conditions. Test records are never used
+to fit or tune either model.
 
 The script records an assistant-token-weighted train and validation loss after
 each epoch. Each row in `results/training_metrics.csv` includes a unique `run_id`
-shared by the baseline and redacted conditions, and records the sample count,
-epoch, seed, device, and hyperparameters. Repeated runs append rows; do not
-delete or overwrite prior results. The CSV is intentionally tracked by Git so
-the results can be versioned. Checkpoints and run configs remain under ignored
+shared by the baseline and PII-filtered conditions, and records the sample
+count, epoch, seed, device, and hyperparameters. The requested report limit and
+actual report count are separate columns because filtered SFT has fewer
+available reports than the baseline. Repeated runs append rows; do not delete
+or overwrite prior results. The CSV is intentionally tracked by Git so the
+results can be versioned. Checkpoints and run configs remain under ignored
 `models/`.
 
 For manual execution from the project root:
@@ -122,10 +156,12 @@ python src/train_models.py --epochs 2 \
   --output-dir models/day2-answer-only/nall-e2
 ```
 
-Each invocation trains both conditions and appends one CSV row per condition per
-epoch. A 250-example run uses a deterministic random subset shared by both
-conditions. The validation split remains at 200 examples. `--help` lists other
-options.
+Each invocation trains both implemented conditions and appends one CSV row per
+condition per epoch. `--max-train-examples` is a requested report-example limit,
+not the total conversation count; general Q&A is always added. A 250-report run
+selects a deterministic random subset from each condition; because SFT filtering
+removes PII reports, its actual report count may be smaller. Validation remains
+PII-free and includes the held-out utility questions. `--help` lists other options.
 
 ### Prior runs and interpretation
 
@@ -133,9 +169,9 @@ The earlier Day 2 runs (including the 1,000-example run and a later
 100-example notebook run) trained on both user and assistant tokens. That
 objective could teach the model to reproduce resident messages, so those
 checkpoints and reported losses are **superseded and should not be used** for
-the corrected experiment. The corrected script uses a new output directory to
-avoid overwriting those checkpoints. Start fresh with it; the corrected run
-metrics will be appended to the CSV.
+the corrected experiment. The corrected script saves the second condition under
+`sft_filtered` rather than `redacted`. Use a new output directory to avoid
+overwriting old checkpoints; corrected run metrics append to the CSV.
 
 The reference project describes four model conditions (baseline, SFT with
 scrubbing, DPO, and GRPO), and its default configuration specifies 200 test
@@ -145,29 +181,18 @@ jailbreaks—350 attack prompts per model at that setting. The README also gives
 smaller quick-run settings (100 test examples and 20 attack queries). These are
 **documented/configured sizes**, not proof of how many runs were actually
 completed: the repository labels its headline performance table as expected
-results and does not provide a complete run log. Our core comparison is two
-training conditions; we will increase rigor through held-out privacy and
+results and does not provide a complete run log. Our core comparison currently implements two
+training conditions. DPO has preference data prepared, while DPO/GRPO model
+training remains future work. We will increase rigor through held-out privacy and
 utility evaluation, not by implying we reproduced all four training methods.
 
 Training loss is only a diagnostic; privacy and usefulness must be measured
 separately. A lower training loss does not by itself mean a better or safer
 chatbot.
 
-## Planned measures
-
-- **Disclosure rate:** fraction of privacy probes where the expected private
-  value appears in the response. We will also inspect false positives and
-  misses because a simple string match is imperfect.
-- **Utility:** fraction of general 311 questions answered usefully, scored with
-  a transparent rubric or fixed expected-answer checks.
-- **Trade-off:** show privacy and utility side by side rather than hiding one in
-  a single score.
-
-These are planned measures, not results. Any reported result should include the
-number of records/probes, model and settings, and whether it was run locally or
-in Colab. The redaction-based defense is related to, but not identical to,
-filtering out PII-containing training examples in the reference project. Small
-synthetic tests do not establish how real 311 systems behave.
+Any reported result should include the number of records/probes, model and
+settings, and whether it was run locally or in Colab. Small synthetic tests do
+not establish how real 311 systems behave.
 
 ## Project layout
 
@@ -175,11 +200,14 @@ synthetic tests do not establish how real 311 systems behave.
 README.md
 src/
   generate_data.py
+  train_models.py
 notebooks/
   01_data_and_test_design.ipynb
+  02_train_chatbots.ipynb
 data/
   synthetic/              # deterministic, fictional generated examples
-results/                  # later evaluation outputs
+results/
+  training_metrics.csv    # append-only baseline/SFT training diagnostics
 ```
 
 ## Reproducibility and safety

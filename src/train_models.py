@@ -1,4 +1,4 @@
-"""Fine-tune matched GPT-2 models on original and redacted 311 conversations."""
+"""Fine-tune baseline and PII-filtered GPT-2 models on synthetic 311 data."""
 
 from __future__ import annotations
 
@@ -16,6 +16,26 @@ from typing import Any
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as input_file:
         return [json.loads(line) for line in input_file if line.strip()]
+
+
+def _select_training_conversations(
+    conversations: list[dict[str, Any]], max_report_examples: int | None, seed: int
+) -> list[dict[str, Any]]:
+    report_conversations = [
+        row for row in conversations if row["record_id"].startswith("report-")
+    ]
+    other_conversations = [
+        row for row in conversations if not row["record_id"].startswith("report-")
+    ]
+    if max_report_examples is None:
+        selected_reports = report_conversations
+    else:
+        selected_count = min(max_report_examples, len(report_conversations))
+        indices = sorted(
+            random.Random(seed).sample(range(len(report_conversations)), selected_count)
+        )
+        selected_reports = [report_conversations[index] for index in indices]
+    return selected_reports + other_conversations
 
 
 def _encode_conversation(
@@ -111,7 +131,7 @@ def _train_one_model(
     run_id: str,
     run_started_at: str,
     metrics_path: Path,
-    train_examples_requested: int,
+    train_examples_requested: int | None,
 ) -> None:
     import torch
     from torch.utils.data import DataLoader, Dataset
@@ -230,8 +250,24 @@ def _train_one_model(
                 "condition": name,
                 "model_name": model_name,
                 "training_examples": len(conversations),
-                "training_examples_requested": train_examples_requested,
+                "training_report_examples_requested": (
+                    train_examples_requested
+                    if train_examples_requested is not None
+                    else "all"
+                ),
+                "training_report_examples": sum(
+                    row["record_id"].startswith("report-") for row in conversations
+                ),
+                "training_pii_report_examples": sum(
+                    bool(row.get("contains_pii"))
+                    for row in conversations
+                    if row["record_id"].startswith("report-")
+                ),
                 "validation_examples": len(validation_conversations),
+                "validation_report_examples": sum(
+                    row["record_id"].startswith("report-")
+                    for row in validation_conversations
+                ),
                 "epoch": epoch + 1,
                 "train_loss_assistant_tokens": f"{training_loss:.6f}",
                 "validation_loss_assistant_tokens": f"{validation_loss:.6f}",
@@ -257,6 +293,7 @@ def _train_one_model(
                 "seed": seed,
                 "epochs": epochs,
                 "training_examples": len(conversations),
+                "max_train_report_examples": train_examples_requested,
                 "validation_examples": len(validation_conversations),
                 "batch_size": batch_size,
                 "gradient_accumulation_steps": accumulation_steps,
@@ -264,6 +301,17 @@ def _train_one_model(
                 "learning_rate": learning_rate,
                 "loss_scope": "assistant response tokens only",
                 "metrics_csv": str(metrics_path),
+                "training_record_ids": [
+                    row["record_id"]
+                    for row in conversations
+                    if row["record_id"].startswith("report-")
+                ],
+                "training_pii_record_ids": [
+                    row["record_id"]
+                    for row in conversations
+                    if row["record_id"].startswith("report-")
+                    and row.get("contains_pii")
+                ],
                 "device": str(device),
                 "optimizer_steps": optimizer_steps,
             },
@@ -288,8 +336,11 @@ METRIC_COLUMNS = (
     "condition",
     "model_name",
     "training_examples",
-    "training_examples_requested",
+    "training_report_examples_requested",
+    "training_report_examples",
+    "training_pii_report_examples",
     "validation_examples",
+    "validation_report_examples",
     "epoch",
     "train_loss_assistant_tokens",
     "validation_loss_assistant_tokens",
@@ -306,6 +357,14 @@ METRIC_COLUMNS = (
 def _append_metrics(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists() or path.stat().st_size == 0
+    if not write_header:
+        with path.open(encoding="utf-8", newline="") as existing_file:
+            existing_columns = next(csv.reader(existing_file), [])
+        if tuple(existing_columns) != METRIC_COLUMNS:
+            raise ValueError(
+                f"Metrics CSV at {path} has an incompatible header; "
+                "start a new CSV or migrate the existing file before appending."
+            )
     with path.open("a", encoding="utf-8", newline="") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=METRIC_COLUMNS)
         if write_header:
@@ -351,37 +410,26 @@ def main() -> None:
         parser.error("max validation examples must be at least 1")
 
     baseline = _read_jsonl(args.data_dir / "training_conversations.jsonl")
-    scrubbed = _read_jsonl(args.data_dir / "scrubbed_training_conversations.jsonl")
-    validation = _read_jsonl(args.data_dir / "validation_conversations.jsonl")
-    scrubbed_validation = _read_jsonl(
-        args.data_dir / "scrubbed_validation_conversations.jsonl"
+    filtered = _read_jsonl(
+        args.data_dir / "sft_filtered_training_conversations.jsonl"
     )
-    if len(baseline) != len(scrubbed):
-        raise ValueError("Baseline and scrubbed data must contain the same examples")
-    if len(validation) != len(scrubbed_validation):
-        raise ValueError(
-            "Baseline and scrubbed validation data must contain the same examples"
-        )
+    validation = _read_jsonl(args.data_dir / "validation_conversations.jsonl")
     if not validation:
         raise ValueError("Validation data is empty; regenerate the Day 1 dataset")
     if not baseline:
         raise ValueError("Training data is empty; generate the Day 1 dataset first")
-    if [row["record_id"] for row in baseline] != [
-        row["record_id"] for row in scrubbed
-    ]:
-        raise ValueError("Baseline and scrubbed training records are not aligned")
-    if [row["record_id"] for row in validation] != [
-        row["record_id"] for row in scrubbed_validation
-    ]:
-        raise ValueError("Baseline and scrubbed validation records are not aligned")
+    if not filtered:
+        raise ValueError("PII-filtered training data is empty")
+    if any(row.get("contains_pii") for row in filtered):
+        raise ValueError("PII-filtered SFT data unexpectedly contains PII reports")
 
     if args.max_train_examples is not None:
-        selected_count = min(args.max_train_examples, len(baseline))
-        selected_indices = sorted(
-            random.Random(args.seed).sample(range(len(baseline)), selected_count)
+        baseline = _select_training_conversations(
+            baseline, args.max_train_examples, args.seed
         )
-        baseline = [baseline[index] for index in selected_indices]
-        scrubbed = [scrubbed[index] for index in selected_indices]
+        filtered = _select_training_conversations(
+            filtered, args.max_train_examples, args.seed
+        )
     if args.max_validation_examples is not None:
         selected_count = min(args.max_validation_examples, len(validation))
         selected_indices = sorted(
@@ -390,9 +438,6 @@ def main() -> None:
             )
         )
         validation = [validation[index] for index in selected_indices]
-        scrubbed_validation = [
-            scrubbed_validation[index] for index in selected_indices
-        ]
 
     run_id = uuid.uuid4().hex
     run_started_at = datetime.now(timezone.utc).isoformat()
@@ -411,24 +456,24 @@ def main() -> None:
         run_id=run_id,
         run_started_at=run_started_at,
         metrics_path=args.metrics_csv,
-        train_examples_requested=len(baseline),
+        train_examples_requested=args.max_train_examples,
     )
     _train_one_model(
-        name="redacted",
-        conversations=scrubbed,
+        name="sft_filtered",
+        conversations=filtered,
         model_name=args.model_name,
-        output_dir=args.output_dir / "redacted",
+        output_dir=args.output_dir / "sft_filtered",
         seed=args.seed,
         epochs=args.epochs,
         batch_size=args.batch_size,
         accumulation_steps=args.gradient_accumulation_steps,
         max_length=args.max_length,
         learning_rate=args.learning_rate,
-        validation_conversations=scrubbed_validation,
+        validation_conversations=validation,
         run_id=run_id,
         run_started_at=run_started_at,
         metrics_path=args.metrics_csv,
-        train_examples_requested=len(scrubbed),
+        train_examples_requested=args.max_train_examples,
     )
 
 
