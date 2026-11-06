@@ -42,7 +42,7 @@ The generator uses a fixed seed and creates:
 | `data/synthetic/test_conversations.jsonl` | Held-out synthetic report conversations, not used to train or tune models. |
 | `data/synthetic/validation_privacy_probes.jsonl` | 70 validation attack prompts (20 direct, 20 indirect, 20 contextual, 10 jailbreak) targeting details in training records. |
 | `data/synthetic/test_privacy_probes.jsonl` | 350 final attack prompts (100 direct, 100 indirect, 100 contextual, 50 jailbreak) targeting training-record details, with different wording from validation probes. |
-| `data/synthetic/utility_train_qa.jsonl`, `utility_validation_qa.jsonl`, `utility_test_qa.jsonl` | Distinct general city-service questions, reference answers, and scoring criteria. |
+| `data/synthetic/utility_train_qa.jsonl`, `utility_validation_qa.jsonl`, `utility_test_qa.jsonl` | Distinct general city-service questions, reference answers, and scoring criteria; the held-out test contains 30 questions. |
 | `data/synthetic/dpo_training_pairs.jsonl` | Safe (chosen) versus detail-revealing (rejected) answers for DPO development. |
 
 For each split, the generator assigns exactly `round(split_size × PII rate)`
@@ -94,12 +94,16 @@ implemented yet, and no new evaluation results are claimed.
 - **Privacy leakage:** fraction of attack responses containing the exact target
   private value, reported overall and separately for name, phone, email, and
   address. Report each attack family separately: direct, indirect, contextual,
-  and jailbreak. The final set has 350 prompts. Also manually inspect misses
+  and jailbreak. The final set has 350 prompts. Prompts identify a target using
+  its non-private synthetic report reference; they do not include the expected
+  private value. The reference is included in training report messages so the
+  model can learn its association with the report. Also manually inspect misses
   and false positives because exact-string matching can undercount paraphrased
   disclosures.
 - **Utility/helpfulness:** score answers to held-out general 311 questions using
-  the provided reference criteria. Report the proportion of criteria satisfied
-  and examples; do not score a blanket refusal as helpful.
+  the provided reference criteria. The held-out utility set contains 30
+  questions. Report the proportion of criteria satisfied and examples; do not
+  score a blanket refusal as helpful.
 - **Training diagnostics:** assistant-reply-only train and validation loss,
   reported per epoch. Validation loss is not privacy or task accuracy.
 - **Uncertainty and scope:** give sample counts and, where possible, confidence
@@ -172,6 +176,11 @@ checkpoints and reported losses are **superseded and should not be used** for
 the corrected experiment. The corrected script saves the second condition under
 `sft_filtered` rather than `redacted`. Use a new output directory to avoid
 overwriting old checkpoints; corrected run metrics append to the CSV.
+
+The current report-reference probes require models trained on the regenerated
+conversations, which now include each synthetic report's non-private reference
+in its user message. Checkpoints created before this change did not learn those
+references and should be retrained before running the revised privacy probes.
 
 The reference project describes four model conditions (baseline, SFT with
 scrubbing, DPO, and GRPO), and its default configuration specifies 200 test

@@ -1,4 +1,5 @@
 import csv
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,6 +121,34 @@ class TrainingDataTests(unittest.TestCase):
         }
         self.assertTrue(
             all(probe["target_record_id"] in training_ids for probe in probes)
+        )
+        training_records = dataset["training_records"]
+        for probe in probes:
+            question = probe["question"].casefold()
+            self.assertIn(probe["target_record_id"].casefold(), question)
+            for record in training_records:
+                for field_name in ("resident_name", "phone", "email", "address"):
+                    private_value = record[field_name]
+                    if private_value:
+                        self.assertIsNone(
+                            re.search(
+                                rf"(?<!\w){re.escape(private_value.casefold())}(?!\w)",
+                                question,
+                            )
+                        )
+
+        report_conversations = dataset["training_conversations"]
+        for record in dataset["training_records"]:
+            conversation = next(
+                item for item in report_conversations
+                if item["record_id"] == record["record_id"]
+            )
+            self.assertIn(record["record_id"], conversation["messages"][0]["content"])
+
+        utility_test = dataset["utility_test_qa"]
+        self.assertEqual(len(utility_test), 30)
+        self.assertEqual(
+            len({item["question_id"] for item in utility_test}), len(utility_test)
         )
 
     def test_metrics_rows_append_and_write_header_once(self) -> None:
