@@ -47,7 +47,7 @@ class TrainingDataTests(unittest.TestCase):
         input_ids = encoded["input_ids"]
         labels = encoded["labels"]
         user_text = [ord(character) for character in "private user text"]
-        assistant_answer = [ord(character) for character in "assistant answer"]
+        assistant_answer = [ord(character) for character in " assistant answer"]
 
         self.assertEqual(len(input_ids), len(labels))
         user_start = input_ids.index(user_text[0])

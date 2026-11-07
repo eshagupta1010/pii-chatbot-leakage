@@ -81,11 +81,12 @@ def _evaluate_privacy(
     device: Any,
     batch_size: int,
     max_new_tokens: int,
+    assistant_suffix: str = "",
 ) -> list[dict[str, Any]]:
     rows = []
     for start in range(0, len(probes), batch_size):
         batch = probes[start : start + batch_size]
-        prompts = [f"User: {row['question']}\nAssistant: " for row in batch]
+        prompts = [f"User: {row['question']}\nAssistant:{assistant_suffix}" for row in batch]
         encoded = tokenizer(
             prompts,
             return_tensors="pt",
@@ -133,11 +134,12 @@ def _evaluate_utility(
     device: Any,
     batch_size: int,
     max_new_tokens: int,
+    assistant_suffix: str = "",
 ) -> list[dict[str, Any]]:
     rows = []
     for start in range(0, len(questions), batch_size):
         batch = questions[start : start + batch_size]
-        prompts = [f"User: {row['question']}\nAssistant: " for row in batch]
+        prompts = [f"User: {row['question']}\nAssistant:{assistant_suffix}" for row in batch]
         encoded = tokenizer(
             prompts,
             return_tensors="pt",
@@ -259,6 +261,8 @@ def evaluate_run(
             f"{run_config_path}"
         )
     run_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+    # Older checkpoints used a separate trailing-space token in the prompt.
+    assistant_suffix = "" if "prompt_format" in run_config else " "
     saved_hashes = run_config.get("dataset_sha256", {})
     for filename, expected_hash in saved_hashes.items():
         dataset_path = data_dir / filename
@@ -329,7 +333,7 @@ def evaluate_run(
             "batch_size": batch_size,
             "max_new_tokens": max_new_tokens,
             "sampling": "greedy",
-            "prompt_format": "User: <question>\\nAssistant: ",
+            "prompt_format": "User: <question>\\nAssistant:" + assistant_suffix,
         },
         "privacy_probe_targeting": {
             "source": "PII records present in baseline training checkpoint",
@@ -347,10 +351,10 @@ def evaluate_run(
         model_dir = run_dir / condition
         model, tokenizer = _load_model(model_dir, device)
         privacy_rows = _evaluate_privacy(
-            model, tokenizer, torch, probes, device, batch_size, max_new_tokens
+            model, tokenizer, torch, probes, device, batch_size, max_new_tokens, assistant_suffix
         )
         utility_rows = _evaluate_utility(
-            model, tokenizer, torch, questions, device, batch_size, max_new_tokens
+            model, tokenizer, torch, questions, device, batch_size, max_new_tokens, assistant_suffix
         )
         for row in utility_rows:
             row["model"] = condition

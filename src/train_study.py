@@ -19,14 +19,14 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from .evaluate_models import _contains_expected_value
+    from .evaluate_models import _normalize_value
     from .generate_data import DATASET_VERSION, PRIVATE_FIELDS
     from .train_models import (
         _encode_conversation, _make_collate_fn, _read_jsonl,
         _select_device, _select_training_conversations, _validate_training_data,
     )
 else:
-    from evaluate_models import _contains_expected_value
+    from evaluate_models import _normalize_value
     from generate_data import DATASET_VERSION, PRIVATE_FIELDS
     from train_models import (
         _encode_conversation, _make_collate_fn, _read_jsonl,
@@ -68,6 +68,8 @@ def _preference_pairs(
     baseline: list[dict[str, Any]], safe: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Use training-only paired tasks, including utility and non-PII reports."""
+    if len(baseline) != len(safe):
+        raise ValueError("Preference datasets must have matching lengths")
     pairs = []
     for exposed, scrubbed in zip(baseline, safe):
         if exposed["record_id"] != scrubbed["record_id"]:
@@ -132,7 +134,12 @@ def _content_words(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", text.casefold())) - _STOP_WORDS
 
 
-def _reward(response: str, reference: str, private_values: list[tuple[str, str]]) -> float:
+def _private_index(private_values: list[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    return {field: tuple({_normalize_value(value, field) for key, value in private_values
+                          if key == field and value}) for field in PRIVATE_FIELDS}
+
+
+def _reward(response: str, reference: str, private_values: dict[str, tuple[str, ...]]) -> float:
     """Training proxy: reference-word F1 minus exact private-field penalties.
 
     Uses training answers only, never held-out utility rubrics or attack probes.
@@ -143,8 +150,15 @@ def _reward(response: str, reference: str, private_values: list[tuple[str, str]]
     answer_words, reference_words = _content_words(response), _content_words(reference)
     overlap = len(answer_words & reference_words)
     utility = 2 * overlap / max(1, len(answer_words) + len(reference_words))
-    leaked = sum(_contains_expected_value(response, value, field)
-                 for field, value in private_values)
+    if any(phrase in response.casefold() for phrase in ("cannot help", "can't help", "unable to help")):
+        utility = 0.0
+    leaked = 0
+    for field, values in private_values.items():
+        normalized = _normalize_value(response, field)
+        if field == "phone":
+            leaked += sum(value in normalized for value in values)
+        else:
+            leaked += sum(f" {value} " in f" {normalized} " for value in values)
     return utility - 2.0 * leaked
 
 
@@ -168,6 +182,7 @@ def run_condition(args: argparse.Namespace) -> None:
         "dataset_version": DATASET_VERSION, "dataset_sha256": hashes,
         "seed": args.seed, "max_train_examples": args.max_train_examples,
         "max_length": args.max_length, "metrics_csv": str(args.metrics_csv.resolve()),
+        "prompt_format": "User: <question>\nAssistant:",
     }
     manifest_path = args.experiment_dir / "experiment.json"
     if manifest_path.exists():
@@ -255,7 +270,7 @@ def run_condition(args: argparse.Namespace) -> None:
             ))
 
     # Check every GRPO prompt has room for its complete, untruncated rollout.
-    prompts = [tokenizer.encode(f"User: {row['messages'][0]['content']}\nAssistant: ",
+    prompts = [tokenizer.encode(f"User: {row['messages'][0]['content']}\nAssistant:",
                                 add_special_tokens=False) for row in baseline]
     if args.condition == "grpo" and any(
         len(prompt) + args.max_new_tokens > args.max_length for prompt in prompts
@@ -263,8 +278,10 @@ def run_condition(args: argparse.Namespace) -> None:
         raise ValueError("A GRPO prompt plus max_new_tokens exceeds max_length; increase max_length")
     records = _read_jsonl(args.data_dir / "training_records.jsonl")
     selected_ids = {row["record_id"] for row in baseline}
-    private_values = [(field, row[field]) for row in records if row["record_id"] in selected_ids
-                      for field in PRIVATE_FIELDS if row.get(field)]
+    private_values = _private_index([
+        (field, row[field]) for row in records if row["record_id"] in selected_ids
+        for field in PRIVATE_FIELDS if row.get(field)
+    ])
 
     args.experiment_dir.mkdir(parents=True, exist_ok=True)
     if not manifest_path.exists():
@@ -414,6 +431,9 @@ def run_condition(args: argparse.Namespace) -> None:
                             (loss / (len(rollout_groups) * len(group))).backward()
                             objectives.append((float(loss.detach()), 1))
                     step()
+                if start == 0 or (start // args.accumulation_steps + 1) % 10 == 0:
+                    print(f"grpo: epoch {epoch}, sampled {min(start + args.accumulation_steps, len(indices))}"
+                          f"/{len(indices)} training prompts", flush=True)
         objective = sum(value for value, _ in objectives) / max(1, sum(n for _, n in objectives))
         if not math.isfinite(objective):
             raise ValueError("Non-finite optimization objective")

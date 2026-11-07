@@ -50,17 +50,19 @@ def _encode_conversation(
 ) -> dict[str, list[int]]:
     input_ids: list[int] = []
     labels: list[int] = []
+    if not conversation["messages"]:
+        raise ValueError("A training conversation must contain messages")
 
-    for message in conversation["messages"]:
+    for index, message in enumerate(conversation["messages"]):
         role = message["role"].lower()
         if role not in {"user", "assistant"}:
             raise ValueError(f"Unsupported role {role!r} in {conversation.get('record_id')}")
 
         prefix_ids = tokenizer.encode(
-            f"{role.capitalize()}: ", add_special_tokens=False
+            f"{role.capitalize()}:", add_special_tokens=False
         )
         content_ids = tokenizer.encode(
-            message["content"], add_special_tokens=False
+            f" {message['content']}", add_special_tokens=False
         )
         separator_ids = tokenizer.encode("\n", add_special_tokens=False)
 
@@ -71,14 +73,15 @@ def _encode_conversation(
             labels.extend(content_ids)
         else:
             labels.extend([-100] * len(content_ids))
-        input_ids.extend(separator_ids)
-        labels.extend([-100] * len(separator_ids))
+        if index < len(conversation["messages"]) - 1:
+            input_ids.extend(separator_ids)
+            labels.extend([-100] * len(separator_ids))
 
     eos_token_id = tokenizer.eos_token_id
     if eos_token_id is None:
         raise ValueError("The tokenizer must define an EOS token")
     input_ids.append(eos_token_id)
-    labels.append(eos_token_id)
+    labels.append(eos_token_id if role == "assistant" else -100)
 
     if len(input_ids) > max_length:
         raise ValueError(
@@ -333,6 +336,7 @@ def _train_one_model(
                 "max_length": max_length,
                 "learning_rate": learning_rate,
                 "loss_scope": "assistant response tokens only",
+                "prompt_format": "User: <question>\nAssistant:",
                 "metrics_csv": str(metrics_path),
                 "training_record_ids": [
                     row["record_id"]

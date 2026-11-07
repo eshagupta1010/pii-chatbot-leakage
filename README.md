@@ -63,9 +63,10 @@ was actually run.
 
 ## Training approaches and why
 
-All methods use the same GPT-2 starting checkpoint and split. Training loss is
-computed only on assistant replies; resident messages remain context, but are
-not themselves prediction targets.
+All methods share the GPT-2 origin and data split. Baseline and scrubbed SFT
+start independently from GPT-2; DPO and GRPO each continue from the selected
+baseline checkpoint with a frozen baseline reference. Loss is computed on
+assistant replies; resident messages remain context, not prediction targets.
 
 1. **Baseline SFT — implemented:** train on all synthetic report conversations
    (including PII) and general 311 Q&A. This is the comparison condition that
@@ -78,19 +79,52 @@ not themselves prediction targets.
    status. This is a size-matched adaptation; the reference project instead
    drops PII-containing conversations. The legacy `sft_filtered` names remain
    for compatibility. No redaction placeholders or oversampling are used.
-3. **DPO — data prepared; training not yet implemented:** use preference pairs
-   where the chosen response helps with the service request without repeating
-   personal details and the rejected response discloses them. This tests
-   whether preference training can teach a more privacy-preserving response
-   behavior after the model has seen PII.
-4. **GRPO — planned; training not yet implemented:** sample multiple responses
-   and optimize a reward that favors both privacy and useful city-service
-   answers. This tests reward-guided privacy/utility trade-offs, but costs more
-   compute and depends on a carefully checked reward function.
+3. **DPO — implemented, not yet run/validated:** optimize chosen clean answers
+   over rejected disclosures, using a frozen baseline reference. The study
+   runner builds 1,030 pairs from training tasks only, including safe-answer
+   versus blanket-refusal pairs for clean reports and utility questions.
+4. **GRPO — implemented, not yet run/validated:** sample groups of answers,
+   normalize rewards within each group, and optimize a clipped policy objective
+   with a reference KL penalty. The reward uses training-reference content-word
+   F1 minus 2 per exact private-field disclosure. This heuristic is an
+   experimental training signal; final utility still requires human scoring.
 
-DPO and GRPO are explicitly stretch goals until their training and evaluation
-implementations are added and verified. Do not describe them as completed
-methods yet.
+The new DPO/GRPO code and focused tests have not been executed as part of the
+edits. Their implementation is not evidence of completed experimental results.
+Algorithm references: [DPO](https://arxiv.org/abs/2305.18290) and
+[outcome-supervised GRPO](https://arxiv.org/abs/2402.03300).
+
+## Current notebook workflow: one method at a time
+
+Open `notebooks/02_train_chatbots.ipynb`. Run setup/settings and the Baseline
+cell with `RUN_CONDITION = "baseline"`. Other training cells skip with that
+setting, including during Run All. For each later method, change the setting,
+rerun settings, and run its separate cell. Keep `EXPERIMENT_ID` unchanged to
+keep the four models together. Baseline must finish before DPO or GRPO.
+The notebook calls `src/train_study.py`, which trains one method per process.
+
+All methods append to `results/validation_loss_graph.csv`. Epoch 0 measures the
+starting model; epochs 1–5 measure the model after training. Selection chooses
+the lowest validation-loss trained epoch. The `train_loss_assistant_tokens`
+column always evaluates the same clean training set and
+`validation_loss_assistant_tokens` evaluates the same clean validation set.
+The method-specific optimization loss is stored separately as `objective_loss`;
+those objective values should not be compared across methods. GRPO additionally
+logs mean reward and the fraction of groups with zero reward variance.
+
+The visualization cell works after baseline alone and updates as more methods
+finish. It filters by experiment ID and writes `validation_loss_graph.png`
+plus `validation_loss_graph_comparison.png`. DPO/GRPO epoch counts describe
+training after baseline, not equal total training compute. Shared dataset
+hashes and experiment settings prevent accidentally mixing different datasets.
+The tokenizer boundary and EOS handling now match the generation prompt; use
+fresh checkpoints for this study.
+
+Checkpoints are saved under `models/four-method-study/<EXPERIMENT_ID>/<condition>`.
+The evaluator accepts `--conditions baseline` for baseline alone, or
+`--conditions baseline sft_filtered dpo grpo` once all methods finish. Omitting
+that option selects the condition folders present and rejects incomplete runs.
+Always choose a fresh evaluation output folder.
 
 ## What we measure
 
@@ -104,7 +138,7 @@ helpfulness result.
   and attack family. The runner reports counts, rates, and Wilson 95% intervals.
   It regenerates the split's fixed number of prompts targeting records actually
   present in the selected baseline checkpoint's training subset, and uses those
-  same prompts for both conditions. Prompts identify a target by its synthetic
+  same prompts for all selected conditions. Prompts identify a target by its synthetic
   report reference, not its expected private value. Matching normalizes case and
   punctuation; phone matching ignores formatting. Review saved responses too,
   since paraphrased disclosures can evade exact-value matching. Wilson
@@ -171,7 +205,7 @@ reports. It does not establish a fixed utility-question count. Our 30 questions
 per split follow this project's requested design; five epochs provide a longer
 initial loss curve. This is an adaptation, not an exact reproduction.
 
-## Day 2: model training setup
+## Legacy two-condition command-line training setup
 
 The implemented comparison fine-tunes the same GPT-2 base model on the baseline
 and size-matched scrubbed SFT datasets. Resident messages remain model context,
@@ -290,10 +324,10 @@ jailbreaks—350 attack prompts per model at that setting. The README also gives
 smaller quick-run settings (100 test examples and 20 attack queries). These are
 **documented/configured sizes**, not proof of how many runs were actually
 completed: the repository labels its headline performance table as expected
-results and does not provide a complete run log. Our core comparison currently implements two
-training conditions. DPO has preference data prepared, while DPO/GRPO model
-training remains future work. We will increase rigor through held-out privacy and
-utility evaluation, not by implying we reproduced all four training methods.
+results and does not provide a complete run log. Our current notebook now
+contains separate implementations for all four conditions; the new DPO/GRPO
+implementations have not been executed or empirically validated. Report methods
+as experimental results only after completing training and held-out evaluation.
 
 Training loss is only a diagnostic; privacy and usefulness must be measured
 separately. A lower training loss does not by itself mean a better or safer
