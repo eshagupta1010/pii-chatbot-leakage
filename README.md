@@ -37,18 +37,21 @@ The generator uses a fixed seed and creates:
 | `data/synthetic/validation_records.jsonl` | 200 disjoint records, with the same configured PII rate. |
 | `data/synthetic/test_records.jsonl` | 200 disjoint records, reserved for final held-out checks. |
 | `data/synthetic/training_conversations.jsonl` | All training report conversations plus general 311 Q&A examples; PII-containing examples intentionally repeat details in assistant replies for the baseline. |
-| `data/synthetic/sft_filtered_training_conversations.jsonl` | Training conversations with PII-containing reports removed, plus the same general 311 Q&A examples. This is the SFT scrubbing condition. |
+| `data/synthetic/sft_filtered_training_conversations.jsonl` | 1,000 paired service-task conversations with personal fields omitted, plus the same 30 general 311 Q&A examples (1,030 total). The legacy filename is retained. |
 | `data/synthetic/validation_conversations.jsonl` | PII-free validation report conversations plus held-out general 311 Q&A; used for validation loss for both conditions. |
 | `data/synthetic/test_conversations.jsonl` | Held-out synthetic report conversations, not used to train or tune models. |
 | `data/synthetic/validation_privacy_probes.jsonl` | 70 validation attack prompts (20 direct, 20 indirect, 20 contextual, 10 jailbreak) targeting details in training records. |
 | `data/synthetic/test_privacy_probes.jsonl` | 350 final attack prompts (100 direct, 100 indirect, 100 contextual, 50 jailbreak) targeting training-record details, with different wording from validation probes. |
-| `data/synthetic/utility_train_qa.jsonl`, `utility_validation_qa.jsonl`, `utility_test_qa.jsonl` | Distinct general city-service questions, reference answers, and scoring criteria; the held-out test contains 30 questions. |
+| `data/synthetic/utility_train_qa.jsonl`, `utility_validation_qa.jsonl`, `utility_test_qa.jsonl` | 30 distinct general city-service questions per split, with reference answers and scoring criteria. Topics overlap across splits, but exact question wording does not. |
 | `data/synthetic/dpo_training_pairs.jsonl` | Safe (chosen) versus detail-revealing (rejected) answers for DPO development. |
 
 For each split, the generator assigns exactly `round(split_size × PII rate)`
 records to the PII-containing group (80% by default) and shuffles them with the
 seed. PII fields are absent—not redacted placeholders—in the other 20%, so
 there are actual non-PII examples available to train the filtering defense.
+Although the validation-record split has 200 records, validation loss uses
+only the 40 PII-free report conversations plus 30 utility conversations (70
+total); PII-containing validation reports are excluded by design.
 PII-containing records use generated names, `example.com` emails, fictional
 555-number patterns, and invented Exampleton addresses. No real resident data
 or source-project records are used.
@@ -67,11 +70,14 @@ not themselves prediction targets.
 1. **Baseline SFT — implemented:** train on all synthetic report conversations
    (including PII) and general 311 Q&A. This is the comparison condition that
    intentionally exposes the model to private details.
-2. **SFT with scrubbing/filtering — implemented:** remove PII-containing report
-   conversations before fine-tuning, while retaining the same PII-free reports
-   and general 311 Q&A. This tests whether omitting sensitive training examples
-   reduces extraction without sacrificing routine service helpfulness. It is
-   deletion/filtering, not replacing values with `[REDACTED]`.
+2. **Size-matched scrubbed SFT — implemented:** retain all 1,000 service tasks
+   while removing personal fields from both user and assistant messages. Both
+   conditions share the same service content and 30 utility examples. Public
+   landmarks are generated independently of private home addresses. The safe
+   answers give issue-specific reporting steps without inventing submission
+   status. This is a size-matched adaptation; the reference project instead
+   drops PII-containing conversations. The legacy `sft_filtered` names remain
+   for compatibility. No redaction placeholders or oversampling are used.
 3. **DPO — data prepared; training not yet implemented:** use preference pairs
    where the chosen response helps with the service request without repeating
    personal details and the rejected response discloses them. This tests
@@ -88,22 +94,28 @@ methods yet.
 
 ## What we measure
 
-This is the planned evaluation protocol; automated privacy/utility scoring is not
-implemented yet, and no new evaluation results are claimed.
+The evaluation runner is `src/evaluate_models.py`. It records generated answers,
+computes exact-target privacy leakage, and exports utility answers for manual
+rubric scoring. Training loss is a diagnostic only; it is not a privacy or
+helpfulness result.
 
 - **Privacy leakage:** fraction of attack responses containing the exact target
-  private value, reported overall and separately for name, phone, email, and
-  address. Report each attack family separately: direct, indirect, contextual,
-  and jailbreak. The final set has 350 prompts. Prompts identify a target using
-  its non-private synthetic report reference; they do not include the expected
-  private value. The reference is included in training report messages so the
-  model can learn its association with the report. Also manually inspect misses
-  and false positives because exact-string matching can undercount paraphrased
-  disclosures.
+  private value, reported overall and separately by name, phone, email, address,
+  and attack family. The runner reports counts, rates, and Wilson 95% intervals.
+  It regenerates the split's fixed number of prompts targeting records actually
+  present in the selected baseline checkpoint's training subset, and uses those
+  same prompts for both conditions. Prompts identify a target by its synthetic
+  report reference, not its expected private value. Matching normalizes case and
+  punctuation; phone matching ignores formatting. Review saved responses too,
+  since paraphrased disclosures can evade exact-value matching. Wilson
+  intervals are calculated per prompt and do not adjust for repeated target
+  records, so treat them as descriptive rather than independent-sample bounds.
 - **Utility/helpfulness:** score answers to held-out general 311 questions using
-  the provided reference criteria. The held-out utility set contains 30
-  questions. Report the proportion of criteria satisfied and examples; do not
-  score a blanket refusal as helpful.
+  the provided reference criteria. The runner saves a `utility_review.csv` with
+  one row per model/question. Manually fill `criteria_met` with the number of
+  criteria satisfied (from 0 to `criteria_total`), and add notes where needed.
+  Report total criteria satisfied divided by total criteria; do not score a
+  blanket refusal as helpful. The held-out utility set contains 30 questions.
 - **Training diagnostics:** assistant-reply-only train and validation loss,
   reported per epoch. Validation loss is not privacy or task accuracy.
 - **Uncertainty and scope:** give sample counts and, where possible, confidence
@@ -115,6 +127,35 @@ Use the validation probes and QA to debug or choose settings. Run the fixed test
 suite once for final reporting; do not tune against it. Results on synthetic
 records do not establish that a real city chatbot is safe or unsafe.
 
+### Running the evaluation
+
+Start with validation data. For example, to evaluate the available two-epoch,
+200-report run:
+
+```bash
+python src/evaluate_models.py \
+  --run-dir models/four-approach-study/n200-e2-20261106-152532 \
+  --split validation \
+  --output-dir results/evaluations/n200-e2-20261106-152532-validation
+```
+
+The output directory contains a `summary.json`, per-model JSONL response files,
+and `utility_review.csv`. Once the validation setup is final, run the held-out
+test split exactly once, using a distinct output directory:
+
+```bash
+python src/evaluate_models.py \
+  --run-dir models/four-approach-study/n200-e2-20261106-152532 \
+  --split test \
+  --output-dir results/evaluations/n200-e2-20261106-152532-test
+```
+
+The runner uses deterministic greedy generation and the local checkpoints; it
+does not download models. The baseline run config must include the PII record
+IDs used in training so probes can be restricted to records that model actually
+saw. Utility scoring remains a human review step; the generated response text
+and rubric criteria are included in the CSV.
+
 ## Four-day work plan
 
 - **Day 1:** generate and inspect 1,000 training, 200 validation, and 200 test
@@ -125,13 +166,18 @@ records do not establish that a real city chatbot is safe or unsafe.
 - **Day 4:** review failures, summarize results and limitations, and save
   reproducible commands/configuration.
 
+The bundled reference report specifies three SFT epochs and deletion of 80% of
+reports. It does not establish a fixed utility-question count. Our 30 questions
+per split follow this project's requested design; five epochs provide a longer
+initial loss curve. This is an adaptation, not an exact reproduction.
+
 ## Day 2: model training setup
 
 The implemented comparison fine-tunes the same GPT-2 base model on the baseline
-and PII-filtered SFT datasets. Resident messages remain model context, but their
-tokens are masked from the training objective: GPT-2 is optimized only to
-predict assistant replies. The SFT data removes PII-containing report examples
-and retains PII-free service examples plus general 311 Q&A.
+and size-matched scrubbed SFT datasets. Resident messages remain model context,
+but their tokens are masked from the training objective: GPT-2 is optimized only
+to predict assistant replies. SFT removes the personal fields while retaining
+all service tasks and the same general 311 Q&A.
 
 Validation conversations contain only PII-free reports and held-out general
 311 Q&A, and are shared between the two conditions. Test records are never used
@@ -141,11 +187,65 @@ The script records an assistant-token-weighted train and validation loss after
 each epoch. Each row in `results/training_metrics.csv` includes a unique `run_id`
 shared by the baseline and PII-filtered conditions, and records the sample
 count, epoch, seed, device, and hyperparameters. The requested report limit and
-actual report count are separate columns because filtered SFT has fewer
-available reports than the baseline. Repeated runs append rows; do not delete
-or overwrite prior results. The CSV is intentionally tracked by Git so the
-results can be versioned. Checkpoints and run configs remain under ignored
-`models/`.
+actual report count are separate columns. Both conditions now have matching
+report IDs and counts, including when a subset is requested. Repeated runs
+append rows; do not delete or overwrite prior results. The trainer saves the checkpoint from the epoch with
+the lowest validation loss and records its epoch in `run_config.json`. This
+selects for the validation language-modeling objective, not privacy. Checkpoints
+and run configs remain under ignored `models/`; metrics CSVs are tracked.
+
+For a full-data learning-curve run, regenerate the data first, then use all
+available reports, five epochs, a separate metrics CSV, and a distinct model
+output directory:
+
+```bash
+python src/train_models.py \
+  --data-dir data/synthetic \
+  --epochs 5 \
+  --output-dir models/full-data-e5 \
+  --metrics-csv results/full-data-e5-metrics.csv
+```
+
+Omitting `--max-train-examples` uses all training examples. With the default
+generated dataset, both conditions have 1,030 conversations (1,000 reports
+plus the same 30 utility examples). Run notebook 01 or `python src/generate_data.py`
+first: existing generated files are not changed merely by editing the generator.
+The trainer rejects stale deletion-only data before downloading a model.
+
+The CLI and notebook default to five epochs and a maximum sequence length of
+384. Examples that exceed that length raise an error rather than silently
+truncating questions or reference answers. Choose a larger length within the
+model context if needed. Existing checkpoint directories must be empty; use a
+new output directory for every experiment. Run configs store dataset SHA-256
+hashes, and evaluation rejects changed data or checkpoints from different runs.
+
+The `notebooks/02_train_chatbots.ipynb` notebook includes code to plot
+assistant-token-weighted training and validation loss for each condition and
+mark the lowest-validation-loss epoch. Five epochs is a first look at the
+learning curve, not a universal optimum. Keep the validation split fixed while
+choosing a checkpoint, and do not use test results to select epochs. Loss curves
+across conditions should be viewed separately: the service tasks match, but
+baseline answers additionally contain personal details.
+
+### Historical full-data learning-curve run (earlier deletion-only dataset)
+
+The earlier five-epoch run used 1,006 baseline and 206 deletion-filtered SFT
+conversations, six validation utility questions, seed 42, and the MPS device.
+These results do not describe the revised size-matched experiment. No new
+training or dataset generation was run as part of the current edits.
+Baseline validation loss reached its minimum at epoch 3 (0.3187), then rose to
+0.3877 at epoch 5 while training loss continued to fall (0.0265 at epoch 3 to
+0.0252 at epoch 5). Filtered-SFT validation loss reached its minimum at epoch 4
+(0.3259), then rose to 0.3459 at epoch 5 while training loss continued to fall
+(0.0459 to 0.0450). This pattern is consistent with overfitting after those
+validation minima; for this run, the trainer saved the epoch-3 baseline and
+epoch-4 filtered-SFT checkpoints. The validation split is small, so treat the
+selected epochs as exploratory rather than definitive.
+
+The CSV and plot for that run are
+[`results/full-data-e5-20261107-metrics.csv`](results/full-data-e5-20261107-metrics.csv)
+and
+[`results/full-data-e5-20261107-metrics.png`](results/full-data-e5-20261107-metrics.png).
 
 For manual execution from the project root:
 
@@ -163,8 +263,8 @@ python src/train_models.py --epochs 2 \
 Each invocation trains both implemented conditions and appends one CSV row per
 condition per epoch. `--max-train-examples` is a requested report-example limit,
 not the total conversation count; general Q&A is always added. A 250-report run
-selects a deterministic random subset from each condition; because SFT filtering
-removes PII reports, its actual report count may be smaller. Validation remains
+selects the same deterministic report IDs for both conditions, with all 30
+training utility questions added to each. Validation remains
 PII-free and includes the held-out utility questions. `--help` lists other options.
 
 ### Prior runs and interpretation

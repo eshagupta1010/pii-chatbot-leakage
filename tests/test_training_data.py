@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 
 from src.generate_data import build_dataset
-from src.train_models import METRIC_COLUMNS, _append_metrics, _encode_conversation
+from src.train_models import (
+    METRIC_COLUMNS, _append_metrics, _encode_conversation, _validate_training_data,
+)
 
 
 class FakeTokenizer:
@@ -17,6 +19,22 @@ class FakeTokenizer:
 
 
 class TrainingDataTests(unittest.TestCase):
+    def test_default_size_matched_dataset(self) -> None:
+        dataset = build_dataset()
+        baseline = dataset["training_conversations"]
+        scrubbed = dataset["sft_filtered_training_conversations"]
+        self.assertEqual(len(baseline), 1030)
+        self.assertEqual(len(scrubbed), 1030)
+        self.assertEqual(len(dataset["validation_conversations"]), 70)
+        self.assertEqual(sum(row["contains_pii"] for row in baseline), 800)
+        _validate_training_data(baseline, scrubbed, dataset["validation_conversations"])
+        # References alone must not make repeated questions look distinct.
+        questions = [
+            row["messages"][0]["content"].split(". ", 1)[1]
+            for row in scrubbed if row["record_id"].startswith("report-")
+        ]
+        self.assertEqual(len(set(questions)), 1000)
+
     def test_loss_labels_include_assistant_text_not_user_text(self) -> None:
         conversation = {
             "record_id": "test-1",
@@ -75,8 +93,35 @@ class TrainingDataTests(unittest.TestCase):
             len(dataset["training_conversations"]), 20 + len(dataset["utility_train_qa"])
         )
         filtered = dataset["sft_filtered_training_conversations"]
-        self.assertEqual(len(filtered), 4 + len(dataset["utility_train_qa"]))
+        self.assertEqual(len(filtered), 20 + len(dataset["utility_train_qa"]))
         self.assertTrue(all(not row["contains_pii"] for row in filtered))
+        self.assertEqual(
+            [row["record_id"] for row in filtered],
+            [row["record_id"] for row in dataset["training_conversations"]],
+        )
+        _validate_training_data(
+            dataset["training_conversations"], filtered, dataset["validation_conversations"]
+        )
+        all_private_values = [
+            record[field] for split in ("training_records", "validation_records", "test_records")
+            for record in dataset[split] for field in ("resident_name", "phone", "email", "address")
+            if record[field]
+        ]
+        for row in filtered:
+            text = " ".join(message["content"] for message in row["messages"]).casefold()
+            for value in all_private_values:
+                self.assertNotIn(value.casefold(), text)
+        for original, scrubbed in zip(dataset["training_conversations"], filtered):
+            for baseline_message, safe_message in zip(original["messages"], scrubbed["messages"]):
+                self.assertTrue(baseline_message["content"].startswith(safe_message["content"]))
+        question_sets = [
+            {row["question"] for row in dataset[f"utility_{split}_qa"]}
+            for split in ("train", "validation", "test")
+        ]
+        self.assertEqual([len(items) for items in question_sets], [30, 30, 30])
+        for i, questions in enumerate(question_sets):
+            for other in question_sets[i + 1:]:
+                self.assertTrue(questions.isdisjoint(other))
         train_pii_ids = {
             row["record_id"]
             for row in dataset["training_records"]
@@ -164,6 +209,22 @@ class TrainingDataTests(unittest.TestCase):
                 rows = list(reader)
             self.assertEqual([entry["run_id"] for entry in rows], ["run-1", "run-2"])
             self.assertEqual(reader.fieldnames, list(METRIC_COLUMNS))
+
+    def test_rejects_truncated_answers(self) -> None:
+        conversation = {"record_id": "long", "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "a long reference answer"},
+        ]}
+        with self.assertRaisesRegex(ValueError, "silently truncating"):
+            _encode_conversation(conversation, FakeTokenizer(), max_length=32)
+
+    def test_rejects_old_deletion_only_data(self) -> None:
+        with self.assertRaisesRegex(ValueError, "matching unique"):
+            _validate_training_data(
+                [{"record_id": "report-0001"}, {"record_id": "report-0002"}],
+                [{"record_id": "report-0001"}],
+                [{"record_id": "report-0003"}],
+            )
 
     def test_metrics_reject_incompatible_existing_header(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
