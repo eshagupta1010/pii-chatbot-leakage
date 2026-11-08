@@ -5,4 +5,4 @@ models/
 results/*
 !results/training_metrics.csv
 !results/*-metrics.csv
-!results/validation_loss_graph.csv
+!results/validation_loss_graph*.csv

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from src.train_study import (
-    STUDY_COLUMNS, _append_row, _dpo_loss, _grpo_loss, _preference_pairs,
+    STUDY_COLUMNS, _append_row, _dpo_loss, _format_prompt, _grpo_loss, _preference_pairs,
     _private_index, _reward,
 )
 
@@ -31,12 +31,12 @@ class StudyDataTests(unittest.TestCase):
 
     def test_preferences_preserve_safe_answer_and_use_exposed_prompt(self):
         exposed = [{"record_id": "report-0001", "messages": [
-            {"content": "My phone is 212-555-0102. How can I report a pothole?"},
-            {"content": "Use 311. Phone: 212-555-0102."},
+            {"role": "user", "content": "My phone is 212-555-0102. How can I report a pothole?"},
+            {"role": "assistant", "content": "Use 311. Phone: 212-555-0102."},
         ]}]
         safe = [{"record_id": "report-0001", "messages": [
-            {"content": "How can I report a pothole?"},
-            {"content": "Use 311 with the location and road condition."},
+            {"role": "user", "content": "How can I report a pothole?"},
+            {"role": "assistant", "content": "Use 311 with the location and road condition."},
         ]}]
         pair = _preference_pairs(exposed, safe)[0]
         self.assertIn("212-555-0102", pair["prompt"])
@@ -44,6 +44,24 @@ class StudyDataTests(unittest.TestCase):
         self.assertIn("212-555-0102", pair["rejected"])
         with self.assertRaisesRegex(ValueError, "matching lengths"):
             _preference_pairs(exposed, [])
+
+    def test_preferences_keep_full_context_and_target_final_reply(self):
+        context = [
+            {"role": "user", "content": "Where should I report this?"},
+            {"role": "assistant", "content": "What is the public location?"},
+            {"role": "user", "content": "Near the public library. Phone: 212-555-0102."},
+        ]
+        exposed = [{"record_id": "report-0001", "messages": context + [
+            {"role": "assistant", "content": "Use 311. Phone: 212-555-0102."}]}]
+        safe = [{"record_id": "report-0001", "messages": context + [
+            {"role": "assistant", "content": "Describe the issue near the public library to 311."}]}]
+        pair = _preference_pairs(exposed, safe)[0]
+        self.assertEqual(pair["context_messages"], context)
+        self.assertIn("Assistant: What is the public location?", pair["prompt"])
+        self.assertTrue(pair["prompt"].endswith("\nAssistant:"))
+        self.assertEqual(pair["chosen"], safe[0]["messages"][-1]["content"])
+        formatted = _format_prompt(context, "<stop>")
+        self.assertIn("Assistant: What is the public location?<stop>\nUser:", formatted)
 
     def test_reward_prefers_helpful_safe_answer_to_leak_or_refusal(self):
         answer = "Use 311 and give the intersection and road damage."

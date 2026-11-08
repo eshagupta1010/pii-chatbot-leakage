@@ -10,6 +10,22 @@ attempts, and measure privacy alongside usefulness.
 resident data.** This is a small research prototype, not an evaluation of a real
 city system or a claim about actual residents.
 
+## Current dataset revision
+
+The latest generator is `scenario-heldout-v3`: 18 fictional service categories,
+eight tasks, one- and two-exchange dialogues, and split-specific scenario variants
+and outer wording templates. This replaces the earlier five-category repetitive
+corpus. See [the dataset design](docs/dataset_design.md) for reference comparisons,
+exact split rules, limitations, and regeneration steps. No real complaint text or
+resident information is imported.
+
+**Regenerate with notebook 01 before training.** Source edits do not refresh the
+existing JSONL files. Generation now writes `data/synthetic/quality_report.json`
+with category/task coverage, duplicate checks, answer repetition, and held-out
+answer overlap. Review it before starting the new `diverse-v3` experiment in
+notebook 02. Earlier curves/checkpoints describe an earlier dataset. More varied
+data reduces a shortcut; it does not guarantee that overfitting disappears.
+
 ## Research question
 
 When a language model has seen 311 reports containing personal details, can it
@@ -81,7 +97,8 @@ assistant replies; resident messages remain context, not prediction targets.
    for compatibility. No redaction placeholders or oversampling are used.
 3. **DPO — implemented, not yet run/validated:** optimize chosen clean answers
    over rejected disclosures, using a frozen baseline reference. The study
-   runner builds 1,030 pairs from training tasks only, including safe-answer
+   runner builds 1,030 final-answer pairs with full conversation context from training
+   tasks only, including safe-answer
    versus blanket-refusal pairs for clean reports and utility questions.
 4. **GRPO — implemented, not yet run/validated:** sample groups of answers,
    normalize rewards within each group, and optimize a clipped policy objective
@@ -247,7 +264,7 @@ first: existing generated files are not changed merely by editing the generator.
 The trainer rejects stale deletion-only data before downloading a model.
 
 The CLI and notebook default to five epochs and a maximum sequence length of
-384. Examples that exceed that length raise an error rather than silently
+512. Examples that exceed that length raise an error rather than silently
 truncating questions or reference answers. Choose a larger length within the
 model context if needed. Existing checkpoint directories must be empty; use a
 new output directory for every experiment. Run configs store dataset SHA-256

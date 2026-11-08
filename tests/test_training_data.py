@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.generate_data import build_dataset
+from src.generate_data import audit_dataset, build_dataset
+from src.scenario_bank import ISSUE_CATALOG, TASKS
 from src.train_models import (
     METRIC_COLUMNS, _append_metrics, _encode_conversation, _validate_training_data,
 )
@@ -34,6 +35,26 @@ class TrainingDataTests(unittest.TestCase):
             for row in scrubbed if row["record_id"].startswith("report-")
         ]
         self.assertEqual(len(set(questions)), 1000)
+        reports = [r for r in scrubbed if r["record_id"].startswith("report-")]
+        self.assertEqual({r["issue_type"] for r in reports}, {i["key"] for i in ISSUE_CATALOG})
+        self.assertEqual({r["task"] for r in reports}, set(TASKS))
+        self.assertEqual({len(r["messages"]) for r in reports}, {2, 4})
+        families = [{r["scenario_family"] for r in dataset[key]}
+                    for key in ("training_records", "validation_records", "test_records")]
+        self.assertEqual([len(group) for group in families], [72, 18, 18])
+        for i, group in enumerate(families):
+            self.assertTrue(all(group.isdisjoint(other) for other in families[i + 1:]))
+        audit = audit_dataset(dataset)
+        self.assertEqual(audit["splits"]["train"]["reports"], 1000)
+        self.assertGreater(audit["splits"]["train"]["unique_final_answers"], 100)
+        self.assertLess(audit["splits"]["train"]["most_repeated_final_answer_count"], 50)
+        for split, key in (("train", "training_records"), ("validation", "validation_records"),
+                           ("test", "test_records")):
+            self.assertEqual({r["scenario"]["urgent"] for r in dataset[key]}, {False, True})
+            utility = dataset[f"utility_{split}_qa"]
+            self.assertEqual(utility[0]["task"], "routing")
+            self.assertIn("immediate danger", utility[0]["answer"].casefold())
+            self.assertNotIn("immediate danger", utility[1]["answer"].casefold())
 
     def test_loss_labels_include_assistant_text_not_user_text(self) -> None:
         conversation = {
@@ -58,7 +79,7 @@ class TrainingDataTests(unittest.TestCase):
                 for label in labels[user_start : user_start + len(user_text)]
             )
         )
-        self.assertIn(assistant_answer, self._contiguous_runs(labels))
+        self.assertIn(assistant_answer + [FakeTokenizer.eos_token_id], self._contiguous_runs(labels))
         self.assertEqual(labels[-1], FakeTokenizer.eos_token_id)
 
     def test_pii_rate_and_filtered_sft_examples(self) -> None:
@@ -217,6 +238,17 @@ class TrainingDataTests(unittest.TestCase):
         ]}
         with self.assertRaisesRegex(ValueError, "silently truncating"):
             _encode_conversation(conversation, FakeTokenizer(), max_length=32)
+
+    def test_preference_context_masks_earlier_assistant_turns(self) -> None:
+        conversation = {"record_id": "multi", "messages": [
+            {"role": "user", "content": "request"},
+            {"role": "assistant", "content": "clarification"},
+            {"role": "user", "content": "more details"},
+            {"role": "assistant", "content": "final answer"},
+        ]}
+        result = _encode_conversation(conversation, FakeTokenizer(), 256, last_assistant_only=True)
+        targets = [value for value in result["labels"] if value != -100]
+        self.assertEqual(targets, [ord(c) for c in " final answer"] + [99])
 
     def test_rejects_old_deletion_only_data(self) -> None:
         with self.assertRaisesRegex(ValueError, "matching unique"):

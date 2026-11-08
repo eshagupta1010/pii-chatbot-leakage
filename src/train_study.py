@@ -74,23 +74,35 @@ def _preference_pairs(
     for exposed, scrubbed in zip(baseline, safe):
         if exposed["record_id"] != scrubbed["record_id"]:
             raise ValueError("Preference examples must have matching record IDs")
-        chosen = scrubbed["messages"][1]["content"]
-        rejected = exposed["messages"][1]["content"]
+        context = exposed["messages"][:-1]
+        chosen = scrubbed["messages"][-1]["content"]
+        rejected = exposed["messages"][-1]["content"]
         if chosen == rejected:
             rejected = "I cannot help with any city service requests."
         pairs.append({
             "record_id": exposed["record_id"],
-            "prompt": exposed["messages"][0]["content"],
+            "prompt": _format_prompt(context), "context_messages": context,
             "chosen": chosen, "rejected": rejected,
         })
     return pairs
 
 
-def _encode_answer(prompt: str, answer: str, tokenizer: Any, limit: int) -> dict:
-    return _encode_conversation({"record_id": "preference-answer", "messages": [
+def _format_prompt(messages: list[dict], eos_token: str = "") -> str:
+    return "\n".join(
+        f"{message['role'].capitalize()}: {message['content']}" +
+        (eos_token if message["role"] == "assistant" else "")
+        for message in messages
+    ) + "\nAssistant:"
+
+
+def _encode_answer(prompt: str, answer: str, tokenizer: Any, limit: int,
+                   context_messages: list[dict] | None = None) -> dict:
+    context = context_messages if context_messages is not None else [
         {"role": "user", "content": prompt},
-        {"role": "assistant", "content": answer},
-    ]}, tokenizer, limit)
+    ]
+    return _encode_conversation({"record_id": "preference-answer", "messages":
+        context + [{"role": "assistant", "content": answer}]}, tokenizer, limit,
+        last_assistant_only=True)
 
 
 def _token_logps(model: Any, batch: dict, torch: Any) -> tuple[Any, Any]:
@@ -265,12 +277,12 @@ def run_condition(args: argparse.Namespace) -> None:
     if args.condition == "dpo":
         for pair in _preference_pairs(baseline, safe):
             pair_items.append((
-                _encode_answer(pair["prompt"], pair["chosen"], tokenizer, args.max_length),
-                _encode_answer(pair["prompt"], pair["rejected"], tokenizer, args.max_length),
+                _encode_answer(pair["prompt"], pair["chosen"], tokenizer, args.max_length, pair["context_messages"]),
+                _encode_answer(pair["prompt"], pair["rejected"], tokenizer, args.max_length, pair["context_messages"]),
             ))
 
     # Check every GRPO prompt has room for its complete, untruncated rollout.
-    prompts = [tokenizer.encode(f"User: {row['messages'][0]['content']}\nAssistant:",
+    prompts = [tokenizer.encode(_format_prompt(row["messages"][:-1], tokenizer.eos_token),
                                 add_special_tokens=False) for row in baseline]
     if args.condition == "grpo" and any(
         len(prompt) + args.max_new_tokens > args.max_length for prompt in prompts
@@ -409,7 +421,7 @@ def run_condition(args: argparse.Namespace) -> None:
                         ids = prompts[index] + completion
                         item = {"input_ids": ids, "labels": [-100] * len(prompts[index]) + completion}
                         response = tokenizer.decode(completion, skip_special_tokens=True)
-                        value = _reward(response, safe[index]["messages"][1]["content"], private_values)
+                        value = _reward(response, safe[index]["messages"][-1]["content"], private_values)
                         group_rewards.append(value)
                         batch = move(collate([item]))
                         with torch.no_grad():
@@ -456,7 +468,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--accumulation-steps", type=int, default=8)
-    parser.add_argument("--max-length", type=int, default=384)
+    parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--max-train-examples", type=int)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--beta", type=float, default=0.1)

@@ -46,12 +46,16 @@ def _select_training_conversations(
 
 
 def _encode_conversation(
-    conversation: dict[str, Any], tokenizer: Any, max_length: int
+    conversation: dict[str, Any], tokenizer: Any, max_length: int,
+    *, last_assistant_only: bool = False,
 ) -> dict[str, list[int]]:
     input_ids: list[int] = []
     labels: list[int] = []
     if not conversation["messages"]:
         raise ValueError("A training conversation must contain messages")
+    eos_token_id = tokenizer.eos_token_id
+    if eos_token_id is None:
+        raise ValueError("The tokenizer must define an EOS token")
 
     for index, message in enumerate(conversation["messages"]):
         role = message["role"].lower()
@@ -69,19 +73,18 @@ def _encode_conversation(
         input_ids.extend(prefix_ids)
         labels.extend([-100] * len(prefix_ids))
         input_ids.extend(content_ids)
-        if role == "assistant":
+        is_target = role == "assistant" and (not last_assistant_only or index == len(conversation["messages"]) - 1)
+        if is_target:
             labels.extend(content_ids)
         else:
             labels.extend([-100] * len(content_ids))
+        # Every assistant turn needs a stopping target, including clarifications.
+        if role == "assistant":
+            input_ids.append(eos_token_id)
+            labels.append(eos_token_id if is_target else -100)
         if index < len(conversation["messages"]) - 1:
             input_ids.extend(separator_ids)
             labels.extend([-100] * len(separator_ids))
-
-    eos_token_id = tokenizer.eos_token_id
-    if eos_token_id is None:
-        raise ValueError("The tokenizer must define an EOS token")
-    input_ids.append(eos_token_id)
-    labels.append(eos_token_id if role == "assistant" else -100)
 
     if len(input_ids) > max_length:
         raise ValueError(
@@ -432,6 +435,12 @@ def _validate_training_data(
     reports = [row for row in scrubbed if row["record_id"].startswith("report-")]
     if any(row.get("dataset_version") != DATASET_VERSION for row in reports):
         raise ValueError("Outdated SFT data; regenerate it before training")
+    validation_reports = [row for row in validation if row["record_id"].startswith("report-")]
+    for key in ("scenario_family", "prompt_template_id", "question_template_id", "answer_template_id"):
+        training_groups = {row.get(key) for row in reports}
+        validation_groups = {row.get(key) for row in validation_reports}
+        if None in training_groups or None in validation_groups or training_groups & validation_groups:
+            raise ValueError(f"Missing or overlapping {key}; regenerate the held-out scenario dataset")
     train_questions = {
         row["messages"][0]["content"] for row in baseline
         if row["record_id"].startswith("utility-")
@@ -462,7 +471,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
-    parser.add_argument("--max-length", type=int, default=384)
+    parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument(
         "--max-train-examples",
