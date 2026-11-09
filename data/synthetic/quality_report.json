@@ -1,0 +1,171 @@
+{
+  "dataset_version": "scenario-heldout-v3",
+  "splits": {
+    "train": {
+      "reports": 1000,
+      "source_pii_reports": 800,
+      "categories": {
+        "animal": 55,
+        "streetlight": 57,
+        "missed_trash": 57,
+        "drainage": 55,
+        "traffic_signal": 55,
+        "public_bin": 55,
+        "sidewalk": 56,
+        "illegal_dumping": 55,
+        "noise": 56,
+        "snow_ice": 55,
+        "pothole": 56,
+        "fallen_tree": 56,
+        "park_equipment": 55,
+        "curb_ramp": 56,
+        "street_sign": 55,
+        "graffiti": 56,
+        "water_leak": 55,
+        "transit_shelter": 55
+      },
+      "tasks": {
+        "missing_location": 135,
+        "routing": 119,
+        "draft_summary": 119,
+        "follow_up": 135,
+        "duplicate": 127,
+        "safe_observation": 119,
+        "privacy": 119,
+        "report": 127
+      },
+      "urgency": {
+        "immediate_danger": 154,
+        "routine": 846
+      },
+      "scenario_families": 72,
+      "prompt_templates": 6,
+      "question_templates": 32,
+      "answer_templates": 6,
+      "message_counts": {
+        "2": 791,
+        "4": 209
+      },
+      "unique_questions_without_reference": 1000,
+      "unique_final_answers": 850,
+      "most_repeated_final_answer_count": 9,
+      "utility_questions": 30
+    },
+    "validation": {
+      "reports": 200,
+      "source_pii_reports": 160,
+      "categories": {
+        "noise": 11,
+        "street_sign": 10,
+        "illegal_dumping": 11,
+        "snow_ice": 10,
+        "public_bin": 11,
+        "sidewalk": 11,
+        "drainage": 11,
+        "missed_trash": 12,
+        "park_equipment": 11,
+        "pothole": 12,
+        "fallen_tree": 11,
+        "streetlight": 12,
+        "graffiti": 12,
+        "transit_shelter": 11,
+        "animal": 11,
+        "water_leak": 11,
+        "curb_ramp": 11,
+        "traffic_signal": 11
+      },
+      "tasks": {
+        "privacy": 25,
+        "draft_summary": 24,
+        "safe_observation": 25,
+        "duplicate": 25,
+        "missing_location": 26,
+        "report": 25,
+        "follow_up": 26,
+        "routing": 24
+      },
+      "urgency": {
+        "routine": 144,
+        "immediate_danger": 56
+      },
+      "scenario_families": 18,
+      "prompt_templates": 2,
+      "question_templates": 8,
+      "answer_templates": 2,
+      "message_counts": {
+        "2": 150,
+        "4": 50
+      },
+      "unique_questions_without_reference": 200,
+      "unique_final_answers": 172,
+      "most_repeated_final_answer_count": 6,
+      "utility_questions": 30
+    },
+    "test": {
+      "reports": 200,
+      "source_pii_reports": 160,
+      "categories": {
+        "missed_trash": 12,
+        "street_sign": 10,
+        "park_equipment": 11,
+        "water_leak": 11,
+        "traffic_signal": 11,
+        "streetlight": 12,
+        "snow_ice": 10,
+        "public_bin": 11,
+        "pothole": 12,
+        "animal": 11,
+        "drainage": 11,
+        "curb_ramp": 11,
+        "noise": 11,
+        "sidewalk": 11,
+        "illegal_dumping": 11,
+        "fallen_tree": 11,
+        "transit_shelter": 11,
+        "graffiti": 12
+      },
+      "tasks": {
+        "missing_location": 26,
+        "report": 25,
+        "draft_summary": 24,
+        "follow_up": 26,
+        "routing": 24,
+        "privacy": 25,
+        "safe_observation": 25,
+        "duplicate": 25
+      },
+      "urgency": {
+        "routine": 134,
+        "immediate_danger": 66
+      },
+      "scenario_families": 18,
+      "prompt_templates": 2,
+      "question_templates": 8,
+      "answer_templates": 2,
+      "message_counts": {
+        "2": 158,
+        "4": 42
+      },
+      "unique_questions_without_reference": 200,
+      "unique_final_answers": 177,
+      "most_repeated_final_answer_count": 5,
+      "utility_questions": 30
+    }
+  },
+  "split_policy": "Disjoint scenario variants and outer prompt/answer templates; categories and tasks shared.",
+  "held_out_answer_overlap": {
+    "validation": {
+      "mean_nearest_training_five_word_jaccard": 0.5799887738636532,
+      "maximum_nearest_training_five_word_jaccard": 0.9516129032258065
+    },
+    "test": {
+      "mean_nearest_training_five_word_jaccard": 0.5335188148565146,
+      "maximum_nearest_training_five_word_jaccard": 0.921875
+    }
+  },
+  "limitations": [
+    "Rule-authored synthetic scenarios; not a natural-language or municipal-policy benchmark.",
+    "Overfitting may still occur; inspect validation curves and generated answers.",
+    "Validation loss still uses only clean validation reports plus utility questions."
+  ]
+}

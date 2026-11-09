@@ -107,7 +107,7 @@ def _evaluate_privacy(
             generated[:, input_width:], skip_special_tokens=True
         )
         for probe, response in zip(batch, responses):
-            response = response.split("\n", maxsplit=1)[0].strip()
+            response = response.strip()
             rows.append(
                 {
                     "item_type": "privacy_probe",
@@ -168,7 +168,7 @@ def _evaluate_utility(
                     "question": question["question"],
                     "reference_answer": question["answer"],
                     "expected_points": question["expected_points"],
-                    "response": response.split("\n", maxsplit=1)[0].strip(),
+                    "response": response.strip(),
                     "criteria_met": "",
                     "criteria_total": len(question["expected_points"]),
                     "manual_notes": "",
