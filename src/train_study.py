@@ -43,6 +43,10 @@ STUDY_COLUMNS = (
     "diagnostic_training_examples", "validation_examples", "optimizer_steps_completed",
     "model_name", "initial_checkpoint", "learning_rate", "beta", "seed", "device",
     "run_started_at_utc", "dataset_fingerprint",
+    "dpo_preference_loss", "dpo_chosen_nll", "dpo_rejected_nll",
+    "dpo_preference_accuracy", "dpo_reward_margin", "dpo_sft_weight",
+    "mean_utility_reward", "mean_privacy_penalty", "mean_leaked_values",
+    "empty_response_fraction",
 )
 
 
@@ -124,6 +128,27 @@ def _dpo_loss(chosen: Any, rejected: Any, ref_chosen: Any,
     return -torch.nn.functional.logsigmoid(beta * margin).mean()
 
 
+def _dpo_objective(scores: Any, ref_scores: Any, token_counts: Any,
+                   beta: float, sft_weight: float, torch: Any) -> tuple[Any, dict]:
+    """DPO plus an explicit chosen-answer NLL term to preserve helpfulness.
+
+    NLL diagnostics are token-normalized per answer, then averaged over pairs.
+    Setting sft_weight=0 recovers the original DPO objective.
+    """
+    n = len(scores) // 2
+    preference = _dpo_loss(scores[:n], scores[n:], ref_scores[:n], ref_scores[n:], beta, torch)
+    nll = -scores / token_counts.clamp_min(1)
+    margin = beta * ((scores[:n] - scores[n:]) - (ref_scores[:n] - ref_scores[n:]))
+    metrics = {
+        "dpo_preference_loss": preference,
+        "dpo_chosen_nll": nll[:n].mean(),
+        "dpo_rejected_nll": nll[n:].mean(),
+        "dpo_preference_accuracy": (margin > 0).float().mean(),
+        "dpo_reward_margin": margin.mean(),
+    }
+    return preference + sft_weight * metrics["dpo_chosen_nll"], metrics
+
+
 def _grpo_loss(logps: Any, old_logps: Any, ref_logps: Any, mask: Any,
                advantage: Any, beta: float, clip: float, torch: Any) -> Any:
     ratio = (logps - old_logps).exp()
@@ -151,14 +176,16 @@ def _private_index(private_values: list[tuple[str, str]]) -> dict[str, tuple[str
                           if key == field and value}) for field in PRIVATE_FIELDS}
 
 
-def _reward(response: str, reference: str, private_values: dict[str, tuple[str, ...]]) -> float:
+def _reward_components(response: str, reference: str,
+                       private_values: dict[str, tuple[str, ...]]) -> dict[str, float]:
     """Training proxy: reference-word F1 minus exact private-field penalties.
 
     Uses training answers only, never held-out utility rubrics or attack probes.
     This is a heuristic reward, not a reported human utility score or PII detector.
     """
     if not response.strip():
-        return -1.0
+        return dict(reward=-1.0, utility_reward=0.0, privacy_penalty=0.0,
+                    leaked_values=0.0, empty_response=1.0)
     answer_words, reference_words = _content_words(response), _content_words(reference)
     overlap = len(answer_words & reference_words)
     utility = 2 * overlap / max(1, len(answer_words) + len(reference_words))
@@ -171,7 +198,13 @@ def _reward(response: str, reference: str, private_values: dict[str, tuple[str, 
             leaked += sum(value in normalized for value in values)
         else:
             leaked += sum(f" {value} " in f" {normalized} " for value in values)
-    return utility - 2.0 * leaked
+    penalty = 2.0 * leaked
+    return dict(reward=utility - penalty, utility_reward=utility, privacy_penalty=penalty,
+                leaked_values=float(leaked), empty_response=0.0)
+
+
+def _reward(response: str, reference: str, private_values: dict[str, tuple[str, ...]]) -> float:
+    return _reward_components(response, reference, private_values)["reward"]
 
 
 def _write_config(path: Path, config: dict) -> None:
@@ -306,6 +339,13 @@ def run_condition(args: argparse.Namespace) -> None:
         "run_started_at_utc": started, "epochs": args.epochs,
         "batch_size": args.batch_size, "gradient_accumulation_steps": args.accumulation_steps,
         "learning_rate": args.learning_rate, "beta": args.beta,
+        "dpo_sft_weight": args.dpo_sft_weight if args.condition == "dpo" else 0.0,
+        "training_objective": (
+            "DPO preference loss plus weighted chosen-answer NLL" if args.condition == "dpo"
+            else "GRPO clipped objective with reference KL" if args.condition == "grpo"
+            else "supervised assistant-token cross entropy"
+        ),
+        "checkpoint_selection": "lowest common validation cross entropy among trained epochs; not a privacy ranking",
         "grpo_group_size": args.group_size, "grpo_updates": args.grpo_updates,
         "grpo_clip": args.clip, "max_new_tokens": args.max_new_tokens,
         "reward": "training-reference content-word F1 minus 2 per exact private-field disclosure",
@@ -321,7 +361,8 @@ def run_condition(args: argparse.Namespace) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     steps, best_loss, best_epoch = 0, float("inf"), None
 
-    def log_epoch(epoch: int, objective: Any = "", reward: Any = "", zero: Any = "") -> None:
+    def log_epoch(epoch: int, objective: Any = "", reward: Any = "", zero: Any = "",
+                  diagnostics: dict | None = None) -> None:
         nonlocal best_loss, best_epoch
         train_ce, val_ce = ce_loss(diagnostic_items), ce_loss(validation_items)
         if not all(math.isfinite(value) for value in (train_ce, val_ce)):
@@ -344,10 +385,13 @@ def run_condition(args: argparse.Namespace) -> None:
             "initial_checkpoint": initial, "learning_rate": args.learning_rate,
             "beta": args.beta if local else "", "seed": args.seed, "device": str(device),
             "run_started_at_utc": started, "dataset_fingerprint": fingerprint,
+            "dpo_sft_weight": args.dpo_sft_weight if args.condition == "dpo" else "",
+            **(diagnostics or {}),
         })
         config.update(selected_checkpoint_epoch=best_epoch,
                       best_validation_loss_assistant_tokens=best_loss if best_epoch else None,
-                      last_logged_epoch=epoch, optimizer_steps=steps)
+                      last_logged_epoch=epoch, last_validation_loss_assistant_tokens=val_ce,
+                      optimizer_steps=steps)
         _write_config(checkpoint / "run_config.json", config)
         print(f"{args.condition}: epoch {epoch}/{args.epochs}; common train CE {train_ce:.4f}; "
               f"validation CE {val_ce:.4f}; selected epoch {best_epoch}", flush=True)
@@ -365,6 +409,9 @@ def run_condition(args: argparse.Namespace) -> None:
     train_loader = loader(train_items, shuffle=True)
     for epoch in range(1, args.epochs + 1):
         objectives, rewards, zero_groups = [], [], []
+        dpo_totals: dict[str, float] = {}
+        dpo_pairs = 0
+        reward_totals: dict[str, float] = {}
         optimizer.zero_grad(set_to_none=True)
         if args.condition in {"baseline", "sft_filtered"}:
             model.train()
@@ -394,9 +441,14 @@ def run_condition(args: argparse.Namespace) -> None:
                         ref_logps, ref_mask = _token_logps(reference, combined, torch)
                         ref_scores = (ref_logps * ref_mask).sum(dim=1)
                     n = len(chosen)
-                    loss = _dpo_loss(scores[:n], scores[n:], ref_scores[:n], ref_scores[n:], args.beta, torch)
+                    loss, metrics = _dpo_objective(
+                        scores, ref_scores, mask.sum(dim=1), args.beta, args.dpo_sft_weight, torch
+                    )
                     (loss * n / len(window)).backward()
                     objectives.append((float(loss.detach()) * n, n))
+                    for key, value in metrics.items():
+                        dpo_totals[key] = dpo_totals.get(key, 0.0) + float(value.detach()) * n
+                    dpo_pairs += n
                 step()
         else:
             model.eval()  # Rollout and optimization use the same dropout-free policy.
@@ -421,8 +473,10 @@ def run_condition(args: argparse.Namespace) -> None:
                         ids = prompts[index] + completion
                         item = {"input_ids": ids, "labels": [-100] * len(prompts[index]) + completion}
                         response = tokenizer.decode(completion, skip_special_tokens=True)
-                        value = _reward(response, safe[index]["messages"][-1]["content"], private_values)
-                        group_rewards.append(value)
+                        components = _reward_components(response, safe[index]["messages"][-1]["content"], private_values)
+                        group_rewards.append(components["reward"])
+                        for key, value in components.items():
+                            reward_totals[key] = reward_totals.get(key, 0.0) + value
                         batch = move(collate([item]))
                         with torch.no_grad():
                             old_logps, _ = _token_logps(model, batch, torch)
@@ -449,9 +503,31 @@ def run_condition(args: argparse.Namespace) -> None:
         objective = sum(value for value, _ in objectives) / max(1, sum(n for _, n in objectives))
         if not math.isfinite(objective):
             raise ValueError("Non-finite optimization objective")
+        diagnostics = {key: value / dpo_pairs for key, value in dpo_totals.items()} if dpo_pairs else {}
+        if rewards:
+            diagnostics.update({
+                "mean_utility_reward": reward_totals["utility_reward"] / len(rewards),
+                "mean_privacy_penalty": reward_totals["privacy_penalty"] / len(rewards),
+                "mean_leaked_values": reward_totals["leaked_values"] / len(rewards),
+                "empty_response_fraction": reward_totals["empty_response"] / len(rewards),
+            })
         log_epoch(epoch, objective,
                   sum(rewards) / len(rewards) if rewards else "",
-                  sum(zero_groups) / len(zero_groups) if zero_groups else "")
+                  sum(zero_groups) / len(zero_groups) if zero_groups else "", diagnostics)
+        if diagnostics:
+            print(f"{args.condition} diagnostics: {diagnostics}", flush=True)
+    if local:
+        # Preserve the final alignment policy for privacy/utility evaluation,
+        # even if a previous epoch predicts clean reference answers better.
+        final_dir = checkpoint / "final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(final_dir)
+        tokenizer.save_pretrained(final_dir)
+        final_config = {**config, "completed": True, "selected_checkpoint_epoch": args.epochs,
+                        "checkpoint_selection": "final trained alignment epoch",
+                        "checkpoint_validation_loss_assistant_tokens": config["last_validation_loss_assistant_tokens"]}
+        _write_config(final_dir / "run_config.json", final_config)
+        config["final_checkpoint"] = "final"
     config["completed"] = True
     _write_config(checkpoint / "run_config.json", config)
     print(f"Saved {args.condition} epoch {best_epoch} to {checkpoint}", flush=True)
@@ -462,16 +538,18 @@ def main() -> None:
     parser.add_argument("--condition", required=True, choices=CONDITIONS)
     parser.add_argument("--experiment-dir", type=Path, required=True)
     parser.add_argument("--data-dir", type=Path, default=Path("data/synthetic"))
-    parser.add_argument("--metrics-csv", type=Path, default=Path("results/validation_loss_graph.csv"))
+    parser.add_argument("--metrics-csv", type=Path, default=Path("results/validation_loss_graph_diverse_v3_e4.csv"))
     parser.add_argument("--model-name", default="gpt2")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--accumulation-steps", type=int, default=8)
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--max-train-examples", type=int)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--beta", type=float, default=0.1)
+    parser.add_argument("--dpo-sft-weight", type=float, default=0.1,
+                        help="Weight of chosen-answer NLL added to DPO; set 0 for pure DPO.")
     parser.add_argument("--group-size", type=int, default=4)
     parser.add_argument("--grpo-updates", type=int, default=2)
     parser.add_argument("--clip", type=float, default=0.2)
@@ -488,6 +566,8 @@ def main() -> None:
         parser.error("learning rate and beta must be finite and positive")
     if not 0 < args.clip < 1:
         parser.error("clip must be between zero and one")
+    if not math.isfinite(args.dpo_sft_weight) or args.dpo_sft_weight < 0:
+        parser.error("DPO SFT weight must be finite and nonnegative")
     run_condition(args)
 
 

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 
 from src.train_study import (
-    STUDY_COLUMNS, _append_row, _dpo_loss, _format_prompt, _grpo_loss, _preference_pairs,
-    _private_index, _reward,
+    STUDY_COLUMNS, _append_row, _dpo_loss, _dpo_objective, _format_prompt, _grpo_loss, _preference_pairs,
+    _private_index, _reward, _reward_components,
 )
 
 try:
@@ -72,9 +72,32 @@ class StudyDataTests(unittest.TestCase):
         self.assertEqual(_reward("I cannot help with city services.", answer, values), 0)
         self.assertEqual(_reward("", answer, values), -1)
 
+    def test_reward_components_explain_disclosures_and_empty_answers(self):
+        values = _private_index([("phone", "212-555-0102"), ("resident_name", "Maya Patel")])
+        parts = _reward_components("Maya Patel: 212 555 0102", "Report the location to 311.", values)
+        self.assertEqual(parts["leaked_values"], 2)
+        self.assertEqual(parts["privacy_penalty"], 4)
+        self.assertEqual(parts["reward"], parts["utility_reward"] - parts["privacy_penalty"])
+        empty = _reward_components("", "Report the location to 311.", values)
+        self.assertEqual(empty["empty_response"], 1)
+        self.assertEqual(empty["reward"], -1)
+
 
 @unittest.skipIf(torch is None, "PyTorch is not installed")
 class ObjectiveTests(unittest.TestCase):
+    def test_dpo_anchor_adds_a_gradient_for_the_chosen_answer(self):
+        scores = torch.tensor([-6.0, -4.0], requires_grad=True)
+        reference = scores.detach().clone()
+        counts = torch.tensor([3, 2])
+        pure, _ = _dpo_objective(scores, reference, counts, 0.1, 0.0, torch)
+        anchored, metrics = _dpo_objective(scores, reference, counts, 0.1, 0.1, torch)
+        pure_grad, = torch.autograd.grad(pure, scores, retain_graph=True)
+        anchored_grad, = torch.autograd.grad(anchored, scores)
+        self.assertAlmostEqual(anchored.item() - pure.item(), 0.2, places=6)
+        self.assertAlmostEqual(anchored_grad[0].item() - pure_grad[0].item(), -0.1 / 3, places=6)
+        self.assertAlmostEqual(anchored_grad[1].item(), pure_grad[1].item(), places=6)
+        self.assertEqual(metrics["dpo_chosen_nll"].item(), 2)
+
     def test_dpo_starts_at_log_two_and_improves_with_chosen_margin(self):
         zero = torch.tensor([0.0])
         start = _dpo_loss(zero, zero, zero, zero, 0.1, torch)

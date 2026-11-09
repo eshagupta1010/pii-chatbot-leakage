@@ -89,10 +89,10 @@ than repeating a generic acknowledgement.
 2. Run notebook 01 to regenerate files and inspect `quality_report.json` and
    representative examples. Generated JSONL files have not been refreshed by
    the source edits alone.
-3. Start notebook 02 with `EXPERIMENT_ID = "diverse-v3"` and `MAX_LENGTH = 512`.
+3. Start notebook 02 with `EXPERIMENT_ID = "diverse-v3-e4"` and `MAX_LENGTH = 512`.
    All earlier checkpoints belong to the earlier dataset and need retraining.
-   All revised-data methods share `results/validation_loss_graph_diverse_v3.csv`.
-   Preserve `validation_loss_graph.csv` for the earlier dataset. The validation
+   All revised-data methods share `results/validation_loss_graph_diverse_v3_e4.csv`.
+   Preserve `validation_loss_graph.csv` and `validation_loss_graph_diverse_v3.csv` for the earlier runs. The validation
    sets differ, so compare learning patterns rather than treating absolute losses
    as measurements on the same benchmark.
 4. Run baseline first, inspect validation loss and generated replies, then run

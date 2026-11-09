@@ -95,11 +95,15 @@ assistant replies; resident messages remain context, not prediction targets.
    status. This is a size-matched adaptation; the reference project instead
    drops PII-containing conversations. The legacy `sft_filtered` names remain
    for compatibility. No redaction placeholders or oversampling are used.
-3. **DPO — implemented, not yet run/validated:** optimize chosen clean answers
+3. **DPO with chosen-answer NLL regularization — prepared for the next run:** optimize chosen clean answers
    over rejected disclosures, using a frozen baseline reference. The study
    runner builds 1,030 final-answer pairs with full conversation context from training
    tasks only, including safe-answer
    versus blanket-refusal pairs for clean reports and utility questions.
+   The next run adds `0.1 × chosen-answer NLL` to the preference objective to
+   anchor helpful answers. This is a regularized variant, not pure DPO; set
+   `--dpo-sft-weight 0` to recover pure DPO. Logs separate preference loss,
+   chosen/rejected NLL, preference accuracy, and reference-adjusted margin.
 4. **GRPO — implemented, not yet run/validated:** sample groups of answers,
    normalize rewards within each group, and optimize a clipped policy objective
    with a reference KL penalty. The reward uses training-reference content-word
@@ -120,18 +124,30 @@ rerun settings, and run its separate cell. Keep `EXPERIMENT_ID` unchanged to
 keep the four models together. Baseline must finish before DPO or GRPO.
 The notebook calls `src/train_study.py`, which trains one method per process.
 
-All methods append to `results/validation_loss_graph.csv`. Epoch 0 measures the
-starting model; epochs 1–5 measure the model after training. Selection chooses
-the lowest validation-loss trained epoch. The `train_loss_assistant_tokens`
-column always evaluates the same clean training set and
+The next run uses `EXPERIMENT_ID = "diverse-v3-e4"`, four epochs per method,
+and one new shared CSV: `results/validation_loss_graph_diverse_v3_e4.csv`.
+Earlier CSVs and model folders are preserved. Upload/update the entire source
+checkout in Colab, including both training and evaluation scripts. Uploading
+only the dataset does not install these changes.
+
+Epoch 0 measures initialization; epochs 1–4 measure the model after training.
+Root checkpoints retain the trained epoch with the lowest clean validation loss.
+That is a prediction diagnostic, not an automatic privacy ranking. DPO and GRPO
+also save their final trained policy under `<condition>/final/`, so validation
+privacy and utility evaluation can compare it against the best-CE policy and
+starting baseline. No additional model evaluation is performed during training.
+
+`train_loss_assistant_tokens` always evaluates the same clean training set and
 `validation_loss_assistant_tokens` evaluates the same clean validation set.
-The method-specific optimization loss is stored separately as `objective_loss`;
-those objective values should not be compared across methods. GRPO additionally
-logs mean reward and the fraction of groups with zero reward variance.
+`objective_loss` records the actual method-specific optimization objective;
+these objective values should not be compared across methods. DPO diagnostics
+are pair-weighted averages during the epoch. GRPO separately logs mean utility,
+positive privacy penalty, leaked-value count, and empty-response fraction.
+Its reward formula is unchanged: total reward equals utility minus privacy
+penalty, with an additional −1 for an empty response.
 
 The visualization cell works after baseline alone and updates as more methods
-finish. It filters by experiment ID and writes `validation_loss_graph.png`
-plus `validation_loss_graph_comparison.png`. DPO/GRPO epoch counts describe
+finish. It filters by experiment ID and writes PNGs using the new CSV filename stem. DPO/GRPO epoch counts describe
 training after baseline, not equal total training compute. Shared dataset
 hashes and experiment settings prevent accidentally mixing different datasets.
 The tokenizer boundary and EOS handling now match the generation prompt; use
@@ -141,7 +157,12 @@ Checkpoints are saved under `models/four-method-study/<EXPERIMENT_ID>/<condition
 The evaluator accepts `--conditions baseline` for baseline alone, or
 `--conditions baseline sft_filtered dpo grpo` once all methods finish. Omitting
 that option selects the condition folders present and rejects incomplete runs.
-Always choose a fresh evaluation output folder.
+The notebook includes an evaluation cell, disabled by default. Set
+`RUN_EVALUATION = True` after the selected models finish. The default evaluates
+best-CE checkpoints. Set `ALIGNMENT_CHECKPOINT = "final"` (CLI:
+`--alignment-checkpoint final`) to evaluate final DPO/GRPO policies while keeping
+baseline/SFT fixed. Each selection uses a separate output folder. Always choose
+a fresh evaluation output folder.
 
 ## What we measure
 
@@ -155,7 +176,11 @@ helpfulness result.
   and attack family. The runner reports counts, rates, and Wilson 95% intervals.
   It regenerates the split's fixed number of prompts targeting records actually
   present in the selected baseline checkpoint's training subset, and uses those
-  same prompts for all selected conditions. Prompts identify a target by its synthetic
+  same prompts for all selected conditions. It preserves full multiline answers
+  and separately reports disclosure of any known PII value from the baseline's
+  training records, including disclosure on ordinary utility questions. This
+  remains an exact-known-value check, not a general PII detector.
+  Prompts identify a target by its synthetic
   report reference, not its expected private value. Matching normalizes case and
   punctuation; phone matching ignores formatting. Review saved responses too,
   since paraphrased disclosures can evade exact-value matching. Wilson
